@@ -15,19 +15,24 @@
 #
 # For each GPU node:
 #   1. SSH connectivity check
-#   2. Install slurm-wlm (pulls slurmd + munge as deps; idempotent)
-#   3. Push /etc/munge/munge.key from cpu01 (correct owner + perms)
-#   4. Push /etc/slurm/slurm.conf from cpu01 (canonical config)
-#   5. Restart munge + slurmd on the target
-#   6. Verify cross-host munge round-trip
-#   7. Verify slurmd is active
+#   2. ONE consolidated ssh -t session: installs slurm-wlm, places
+#      munge.key + slurm.conf, enables/restarts daemons. Prompts
+#      for sudo password on the target ONCE per node.
+#   3. Cross-host munge round-trip verification
+#   4. slurmd-is-active check
 # Final: sinfo from cpu01 — should show all 4 nodes registered.
+#
+# Password handling: you'll be prompted for the SSH user's sudo
+# password on each GPU node once (during step 2). No NOPASSWD
+# sudo required. The script does NOT cache passwords — every
+# node prompts independently.
 #
 # Prerequisites on cpu01:
 #   - 05_slurm.sh + 06_accounting.sh already run (slurmctld up)
 #   - munge.key exists at /etc/munge/munge.key
 #   - SSH key access to each GPU node as $SSH_USER
-#   - $SSH_USER has passwordless sudo on each GPU node
+#   - Run as root (sudo ./register_gpu_nodes.sh) so the script can
+#     read /etc/munge/munge.key directly without prompting on cpu01
 #
 # Prerequisites on each GPU node:
 #   - OS installed + NVIDIA driver installed (01_os_base, 03_nvidia)
@@ -58,6 +63,18 @@ SSH_USER="${SSH_USER:-ntail}"
 [[ -f /etc/munge/munge.key ]] || { echo "[!] /etc/munge/munge.key missing on cpu01"; exit 1; }
 [[ -f /etc/slurm/slurm.conf ]] || { echo "[!] /etc/slurm/slurm.conf missing on cpu01"; exit 1; }
 
+# Must be able to read munge.key (it's 0400 owned by munge). Re-exec
+# with sudo if we're not already root.
+if [[ ! -r /etc/munge/munge.key ]]; then
+  echo "[*] /etc/munge/munge.key is not readable as $(whoami) — re-running with sudo"
+  exec sudo "$0" "$@"
+fi
+
+# Pre-encode the files we'll push so we don't need sudo on cpu01
+# inside the per-node loop.
+MUNGE_KEY_B64="$(base64 -w0 < /etc/munge/munge.key)"
+SLURM_CONF_B64="$(base64 -w0 < /etc/slurm/slurm.conf)"
+
 # Derive GPU hostnames from cpu01's prefix so customer naming flows through
 PREFIX="${LOCAL_HOST%cpu01}"
 
@@ -83,64 +100,60 @@ for entry in $GPU_NODES; do
   echo "═══════════════════════════════════════════════════════"
 
   # ── 1. SSH connectivity ──────────────────────────────────
-  echo "[1/7] Testing SSH..."
+  echo "[1/4] Testing SSH..."
   if ! ssh -o BatchMode=yes -o ConnectTimeout=5 "$SSH_USER@$IP" 'true' 2>/dev/null; then
     echo "  [FAIL] Cannot SSH to $SSH_USER@$IP"
-    echo "         Confirm SSH key auth is set up + sudo NOPASSWD."
+    echo "         Confirm SSH key auth is set up."
     FAIL_NODES+=("$HOST")
     continue
   fi
   echo "  [OK]"
 
-  # ── 2. Install slurm-wlm (includes slurmd, pulls munge as dep) ──
-  echo "[2/7] Installing slurm-wlm on $HOST (no-op if already installed)..."
-  if ssh "$SSH_USER@$IP" 'sudo DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null && \
-                          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y slurm-wlm slurm-client'; then
+  # ── 2. Single consolidated ssh -t session ────────────────
+  # One sudo prompt on the target. Does everything: apt install,
+  # place munge.key + slurm.conf, enable+restart daemons.
+  echo "[2/4] Installing + configuring on $HOST (will prompt for sudo password)..."
+  if ssh -t "$SSH_USER@$IP" "sudo bash -s '$MUNGE_KEY_B64' '$SLURM_CONF_B64'" <<'REMOTE'
+set -euo pipefail
+MUNGE_KEY_B64="$1"
+SLURM_CONF_B64="$2"
+
+# Install slurm-wlm (idempotent — apt no-op if already installed)
+DEBIAN_FRONTEND=noninteractive apt-get update -y >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y slurm-wlm slurm-client
+
+# Place munge.key
+echo "$MUNGE_KEY_B64" | base64 -d > /etc/munge/munge.key
+chown munge: /etc/munge/munge.key
+chmod 400 /etc/munge/munge.key
+
+# Place slurm.conf
+mkdir -p /etc/slurm
+echo "$SLURM_CONF_B64" | base64 -d > /etc/slurm/slurm.conf
+chown slurm:slurm /etc/slurm/slurm.conf
+chmod 644 /etc/slurm/slurm.conf
+
+# Enable + restart daemons
+systemctl enable --now munge
+systemctl restart munge
+sleep 2
+systemctl enable --now slurmd
+systemctl restart slurmd
+
+echo "[remote-done] $(hostname -s)"
+REMOTE
+  then
     echo "  [OK]"
   else
-    echo "  [FAIL] apt install slurm-wlm failed on $HOST"
+    echo "  [FAIL] Setup failed on $HOST. Output above shows where."
     FAIL_NODES+=("$HOST")
     continue
   fi
 
-  # ── 3. Push munge.key from cpu01 ─────────────────────────
-  echo "[3/7] Pushing /etc/munge/munge.key..."
-  if sudo cat /etc/munge/munge.key | \
-       ssh "$SSH_USER@$IP" 'sudo tee /etc/munge/munge.key >/dev/null && \
-                            sudo chown munge: /etc/munge/munge.key && \
-                            sudo chmod 400 /etc/munge/munge.key'; then
-    echo "  [OK]"
-  else
-    echo "  [FAIL]"
-    FAIL_NODES+=("$HOST")
-    continue
-  fi
-
-  # ── 4. Push slurm.conf from cpu01 (canonical) ────────────
-  echo "[4/7] Pushing /etc/slurm/slurm.conf..."
-  if sudo cat /etc/slurm/slurm.conf | \
-       ssh "$SSH_USER@$IP" 'sudo mkdir -p /etc/slurm && \
-                            sudo tee /etc/slurm/slurm.conf >/dev/null && \
-                            sudo chown slurm:slurm /etc/slurm/slurm.conf && \
-                            sudo chmod 644 /etc/slurm/slurm.conf'; then
-    echo "  [OK]"
-  else
-    echo "  [FAIL]"
-    FAIL_NODES+=("$HOST")
-    continue
-  fi
-
-  # ── 5. Enable + restart munge + slurmd ───────────────────
-  echo "[5/7] Enabling + restarting munge + slurmd on $HOST..."
-  ssh "$SSH_USER@$IP" 'sudo systemctl enable --now munge && \
-                       sudo systemctl restart munge && \
-                       sleep 2 && \
-                       sudo systemctl enable --now slurmd && \
-                       sudo systemctl restart slurmd'
   sleep 3
 
-  # ── 6. Cross-host munge verification ─────────────────────
-  echo "[6/7] Verifying cpu01 → $HOST munge round-trip..."
+  # ── 3. Cross-host munge verification ─────────────────────
+  echo "[3/4] Verifying cpu01 → $HOST munge round-trip..."
   if munge -n 2>/dev/null | ssh "$SSH_USER@$IP" 'unmunge' >/dev/null 2>&1; then
     echo "  [OK] munge token from cpu01 decodes on $HOST"
   else
@@ -149,8 +162,8 @@ for entry in $GPU_NODES; do
     continue
   fi
 
-  # ── 7. Verify slurmd is active ───────────────────────────
-  echo "[7/7] Verifying slurmd is running on $HOST..."
+  # ── 4. Verify slurmd is active ───────────────────────────
+  echo "[4/4] Verifying slurmd is running on $HOST..."
   if ssh "$SSH_USER@$IP" 'systemctl is-active --quiet slurmd'; then
     echo "  [OK] slurmd active on $HOST"
   else
