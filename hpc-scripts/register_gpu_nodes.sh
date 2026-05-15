@@ -64,10 +64,27 @@ SSH_USER="${SSH_USER:-ntail}"
 [[ -f /etc/slurm/slurm.conf ]] || { echo "[!] /etc/slurm/slurm.conf missing on cpu01"; exit 1; }
 
 # Must be able to read munge.key (it's 0400 owned by munge). Re-exec
-# with sudo if we're not already root.
+# with sudo if we're not already root. Preserve SSH_AUTH_SOCK so the
+# ssh-agent (with your passphrase-unlocked key) is still usable as root.
 if [[ ! -r /etc/munge/munge.key ]]; then
   echo "[*] /etc/munge/munge.key is not readable as $(whoami) — re-running with sudo"
-  exec sudo "$0" "$@"
+  if [[ -n "${SSH_AUTH_SOCK:-}" ]]; then
+    exec sudo --preserve-env=SSH_AUTH_SOCK "$0" "$@"
+  else
+    exec sudo "$0" "$@"
+  fi
+fi
+
+# If running as root but a non-root user has the ssh-agent (which is
+# the normal case), warn so we don't end up prompting for passphrases
+# in the loop.
+if [[ "$(id -u)" -eq 0 && -z "${SSH_AUTH_SOCK:-}" ]]; then
+  echo "[!] WARN: Running as root but SSH_AUTH_SOCK is not set."
+  echo "    If your SSH key has a passphrase, ssh will prompt for it on"
+  echo "    each connection (3 times for 3 GPU nodes)."
+  echo "    To avoid this: run the script as your user (not via sudo),"
+  echo "    after running 'eval \$(ssh-agent -s) && ssh-add'."
+  echo
 fi
 
 # Pre-encode the files we'll push so we don't need sudo on cpu01
