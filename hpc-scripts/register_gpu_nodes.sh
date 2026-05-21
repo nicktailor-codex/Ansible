@@ -57,7 +57,7 @@ case "$LOCAL_HOST" in
     ;;
 esac
 
-SSH_USER="${SSH_USER:-ntail}"
+SSH_USER="${SSH_USER:-ntailor}"
 
 # ── Sanity checks ───────────────────────────────────────────
 [[ -f /etc/munge/munge.key ]] || { echo "[!] /etc/munge/munge.key missing on cpu01"; exit 1; }
