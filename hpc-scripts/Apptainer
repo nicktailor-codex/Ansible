@@ -1,0 +1,29 @@
+# 1. Install Apptainer (Ubuntu 24.04 doesn't have it in main universe)
+sudo add-apt-repository -y ppa:apptainer/ppa
+sudo apt update
+sudo apt install -y apptainer
+apptainer --version
+
+# 2. Set up directories (you ran this as ntailor after /scratch was set to 1777)
+mkdir -p /scratch/cluster-software/{containers,modulefiles,sources}
+
+# 3. Apptainer cache + tmpdir on /scratch (keeps OS disk safe during pull)
+mkdir -p /scratch/$USER/.apptainer-cache /scratch/$USER/.apptainer-tmp
+export APPTAINER_CACHEDIR=/scratch/$USER/.apptainer-cache
+export APPTAINER_TMPDIR=/scratch/$USER/.apptainer-tmp
+
+# Persist for future shells
+echo 'export APPTAINER_CACHEDIR=/scratch/$USER/.apptainer-cache' >> ~/.bashrc
+echo 'export APPTAINER_TMPDIR=/scratch/$USER/.apptainer-tmp' >> ~/.bashrc
+
+# 4. Pull from Docker Hub, convert to SIF
+apptainer pull \
+    /scratch/cluster-software/containers/burdentesting-latest.sif \
+    docker://egardner413/mrcepid-burdentesting:latest
+
+# 5. Verify
+ls -lh /scratch/cluster-software/containers/burdentesting-latest.sif
+apptainer inspect /scratch/cluster-software/containers/burdentesting-latest.sif
+
+#The pull step is the one that converts the multi-layer Docker image on Docker Hub into a single squashfs SIF (~2.3 GB final size, ~10-20 min depending on bandwidth).
+#For the other three nodes, the install part is the same (steps 1) but you don't need to repeat steps 2-5 yet since SIFs only live on cpu01 until NetApp lands.

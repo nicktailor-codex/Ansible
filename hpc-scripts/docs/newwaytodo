@@ -1,0 +1,40 @@
+1. Pyxis and Enroot (NVIDIA) — Best for seamless Slurm integration
+NVIDIA built Enroot to take standard Docker images and unpack them into unprivileged user sandboxes. Pyxis is a Slurm SPANK plugin that integrates Enroot directly into Slurm's command line.  
+
+Instead of writing a script that pulls and runs a container, Pyxis extends Slurm so you can call Docker images natively via srun or sbatch.
+
+How it works in practice:
+Bash
+
+ 
+
+Plain Text
+
+srun --container-image=docker://ubuntu:latest --container-mounts=/home/user:/data bash
+ 
+Plain Text
+
+*   **Pros:** Deep Slurm integration, blazing fast image pulling, and flawless GPU support (if you are running AI/ML workloads).
+*   **Cons:** Requires your sysadmins to install and configure the Pyxis plugin on the Slurm controller and compute nodes.
+
+### 2. Podman — *Best for a pure Docker-CLI experience*
+**Podman** is Red Hat's daemonless, rootless alternative to Docker. It uses the exact same Open Container Initiative (OCI) standards as Docker, meaning your Dockerfiles and images will work seamlessly. 
+
+*   **How it works in practice:** You simply replace the word docker with podman inside your standard Slurm submission scripts.
+    ```bash
+    #!/bin/bash
+    #SBATCH --job-name=podman_job
+    
+    podman run --rm -v /my/data:/data docker.io/library/ubuntu:latest python script.py
+    
+
+
+Pros: Drop-in replacement for Docker syntax. It requires zero configuration on the Slurm controller itself (it just needs to be installed on the compute nodes).
+Cons: Doesn't tie into Slurm's native resource flags directly; Slurm just sees it as another user executable.
+3. Slurm's Native OCI Support
+Slurm recently introduced native support for OCI containers. This allows you to configure Slurm to communicate directly with a rootless container runtime (like Rootless Docker or Podman) using a tool called scrun.
+
+Pros: Built directly into Slurm's core codebase.
+Cons: The setup is notably complex, requiring custom configuration of scrun, Munge authentication, and rootless Docker on every compute node. It can also suffer from massive performance penalties if you don't configure a shared filesystem for the image cache.
+4. Charliecloud or Sarus
+If the above don't fit, there are other HPC-specific container runtimes. Charliecloud (developed by Los Alamos National Laboratory) is entirely unprivileged and uses standard Docker images. Sarus (by CSCS) is another highly Docker-compatible runtime tailored for HPC. Both are solid, though Pyxis/Enroot generally has more momentum right now.

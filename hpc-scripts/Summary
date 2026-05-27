@@ -1,0 +1,173 @@
+Here's a handoff summary in the same style as your original one — covers what's done in this session plus the open decisions for the new chat to pick up.
+
+Cluster Build Handoff — Session 2 (Software & Partitioning)
+Hardware state (unchanged from session 1)
+
+insiiukcpu01 (10.174.16.55) — 128 CPU / 512 GB RAM / 8 TB NVMe / no GPU — controller + high-mem compute
+insiiukgpu01 (10.174.16.57) — 64 CPU / 256 GB RAM / 8 TB NVMe / H200 NVL 141 GB
+insiiukgpu02 (10.174.16.58) — 64 CPU / 256 GB RAM / 8 TB NVMe / H200 NVL 141 GB
+insiiukcgpu01 (10.174.16.56) — 64 CPU / 256 GB RAM / 8 TB NVMe / L4 24 GB
+
+accomplished this session
+1. Updated NetApp punch list (v6 → v7 → v8)
+
+v6: marked TCP max transfer size (1 MB) and UDP-disabled as configured
+v7: normalized all status labels — completed items = "Configured" (green italic), outstanding = "Pending" (red bold italic)
+v8: updated "Configure NFSv4 ID mapping" section to reflect LDAP backend (Method = umich_ldap, [UMICH_SCHEMA] block, AD-typical attribute mappings — sAMAccountName, uidNumber, gidNumber)
+
+2. Container deployment validated end-to-end on cpu01
+MRC EPID burdentesting container (egardner413/mrcepid-burdentesting:latest) deployed via Apptainer 1.5.0.
+
+Apptainer installed via ppa:apptainer/ppa (Ubuntu 24.04 noble doesn't have it in universe — only Go library packages)
+SIF at /scratch/cluster-software/containers/burdentesting-latest.sif (~2.3 GB squashed)
+Image digest captured for pinning: sha256:ea3b78bb85342c91f44663a01e70e8cdc4b94545f88506b5ba861ebcc9c6175e
+APPTAINER_CACHEDIR=/scratch/$USER/.apptainer-cache and APPTAINER_TMPDIR=/scratch/$USER/.apptainer-tmp — keeps transient bulk off OS disk, persisted in ~/.bashrc
+/scratch set to 1777 (sticky-bit world-writable, standard HPC scratch convention)
+
+Validated (all passed):
+
+11 binary tools (REGENIE 3.4.1, BOLT-LMM 2.4.1, samtools 1.20, bcftools 1.20, plink 1.90b7.2, plink2 2.00a5.11LM, bedtools 2.30.0, METAL 2020-05-05, GCTA 1.94.4, qctool 2.2.0, bgenix 1.1.8)
+Full R stack (R 4.3.3 + GENESIS 2.32.0 + GMMAT 1.4.2 + STAAR 0.9.7 + SKAT/MetaSKAT/tidyverse — 17 CRAN packages all loading)
+SAIGE custom build (4 patched-shebang scripts — shrinkwrap + savvy + plink-ng integration all worked)
+VEP 108.2 (ensembl-vep + funcgen + io + variation) with LOFTEE
+Python 3.8.10 + general_utilities
+
+3. Slurm fixes during smoke test
+Cascade of issues surfaced and resolved:
+
+Account hierarchy was broken — sub-accounts (bioinformatics, cheminformatics, statistical_genetics) were created as siblings of research under root, not as children of research. Confirmed correct via sacctmgr show association tree (the column-view show account table renders ParentName as empty but the actual associations were nested correctly).
+Added ntailor to research account (admin pattern — parent gives cross-account scope)
+Prolog/Epilog scripts referenced in slurm.conf didn't exist — /etc/slurm/prolog.sh and /etc/slurm/epilog.sh missing. Every job launch failed → node drained with Reason=Prolog error. Fixed by commenting out the directives (PrologFlags=Alloc,Contain stays).
+Orphan slurmd held port 6818 after a failed restart. Required manual kill <pid> before systemctl start slurmd would succeed. Cause: slurmd was mid-prolog-failure when SIGTERM arrived, orphaned itself out of the systemd cgroup.
+PMIx noise in slurmd logs — MpiDefault=pmix_v5 but PMIx isn't installed. Non-blocking; deferred to next maintenance window (change to MpiDefault=none, no MPI on this cluster).
+slurm.conf pushed to all 4 nodes via register_gpu_nodes.sh — Nick's existing script, runs from cpu01, handles slurm-wlm install + munge.key + slurm.conf push + daemon restart. Fleet now byte-identical.
+
+4. End-to-end Slurm validation
+Job 4 ran cleanly: --partition=cpu --account=research, COMPLETED with ExitCode 0:0, 225 lines of REGENIE banner in stdout, empty stderr.
+5. Apptainer fleet install
+Apptainer 1.5.0 installed via PPA on all 4 nodes (so containers can run anywhere, though gpu02/cgpu01 don't have SIFs staged yet — pre-NetApp).
+6. Documents produced
+
+Workload_Partition_Mapping.docx — workloads grouped by sub-account → partition (created earlier, may need update once new partition design lands)
+NetApp_NFS_Status_and_Punch_List_v8.docx — current punch list state
+Burdentesting_Container_Deployment_Guide.docx — full 11-section guide covering pre-flight → install → smoke tests → Slurm gotchas → register_gpu_nodes.sh workflow → NetApp migration → open items
+burdentesting_smoke.sh — interactive smoke test (all 20+ tool/library checks, pass/fail counter, exits non-zero if any fail)
+burdentesting_slurm_smoke.sh — Slurm submission smoke test with colored output, state transitions during wait, sacct details, output preview, PASS/FAIL verdict box
+
+Software delivery model (agreed)
+Two-track approach, both layered onto /software (NetApp, when available) and reachable via Lmod:
+
+Containers (Apptainer) — for whole-pipeline reproducibility.
+
+MRC EPID burdentesting is the first one; it's the "gold template" for stat-gen
+Author publishes new versions; we pull, validate, replace
+Ansible-managed catalog (containers.yml vars file, pull task, modulefile generation)
+Naming convention: pipelines/<name>/<version> to distinguish from native modules
+Per-sub-account catalogs (bioinformatics-containers.yml, etc.) plus per-user namespace (/software/containers/users/<ad-name>/)
+
+
+Spack + Lmod — for individual tool flexibility.
+
+Source-built, version-pinned, optimized for the cluster's microarch
+Lives on /software/spack on NetApp (when available); install once, available fleet-wide
+Hosts general-purpose tooling (compilers, Python, R, samtools, bcftools, plink, REGENIE, BOLT-LMM, GCTA, openblas, boost, etc.)
+Users module load <tool>/<version> for ad-hoc analysis
+Lockstep with container versions where applicable (regenie/3.4.1 available both as a Spack module and inside the burdentesting container)
+
+
+
+Schrödinger stays native — licensing daemons don't containerize, vendor doesn't support Spack.
+Partitioning design (in progress)
+What the cheminformatics author proposed (partitioningv2.docx):
+
+Dedicate cgpu01 + gpu01 to cheminformatics exclusively
+Workload-class partitions: services, dev-gpu, dev-cpu (Both), interactive (Both)
+QoS scheme: always-on (2000), services (1000), interactive (300), dev (100), batch (50)
+AllowAccounts=cheminformatics on chem nodes
+bio/stat-gen workloads relegated to cpu01 + gpu02 ("shared research pool")
+
+Structural problem with the proposal:
+Cluster has no parallel-compute infrastructure — no Lustre/GPFS/BeeGFS, no RDMA fabric between compute nodes (only NetApp filer has RDMA enabled, but compute nodes have no HCAs, no InfiniBand/RoCE switch), no MPI runtime. NetApp NFSv4.1 over TCP + nconnect + 1MB transfer is the storage path.
+The author's dev-cpu (Both) and interactive (Both) partitions assume pool-mode scheduling (Slurm picks which of two nodes runs a job). The "fall-back of services from cgpu01 to gpu01" assumes auto-failover Slurm can't provide. None of the workloads in the proposal actually need cross-node parallelism — all are single-node — but the partition design was written as if they could span nodes.
+Where we landed (current proposal in negotiation):
+
+cgpu01 — cheminformatics only, hard AllowAccounts wall, David is steward
+gpu02 — cheminformatics + Chris + Robert (named bio/stat-gen users), soft priority for chem jobs (QoS-based priority, not pre-emption), David is steward
+gpu01 — all three sub-accounts via fairshare, no wall
+cpu01 — all three sub-accounts via fairshare, no wall
+
+Mechanism for gpu02 access:
+
+POSIX/AD group (name pending from IT) containing chem members + Chris + Robert
+AllowGroups=<group-name> on the partition (Slurm reads POSIX groups via SSSD when AD lands)
+Soft-priority QoS: chem jobs at priority ~200, Chris/Robert at ~100 — chem goes first when queues collide, nothing pre-empted
+Same group used at SSH layer (AllowGroups in sshd_config) for consistency
+
+Coordination + visibility:
+
+Cross-team requests for the shared nodes (cpu01, gpu01) happen via Slurm normally — no walls, fairshare arbitrates
+Web-based monitoring dashboard to be deployed (slurmrestd + Grafana, hosted on cgpu01, served via the same nginx/traefik reverse proxy that fronts the chem REST APIs) — gives all teams visibility into running/queued jobs + active reservations
+Multi-day campaign reservations on gpu01/gpu02 handled via Slurm reservations, requested in advance
+
+Open items on partitioning:
+
+AD group name from IT
+Confirm Chris/Robert's primary sub-accounts (bio vs. stat-gen)
+Wall-time differentials on gpu02 (chem 14d-ish for FEP+ campaigns, Chris/Robert capped at 5d?)
+Always-on services reservation sizing on cgpu01 (~8-16 vCPU, 32-64 GB RAM, partial L4 share)
+Sunset/review trigger for the cgpu01 carve-out (time-based, utilization-based, milestone-based?)
+Workload-Partition-Mapping doc needs updating to reflect this new model
+
+Operational gotchas learned this session
+
+Apptainer on Ubuntu 24.04 noble — not in main universe repo, only Go library packages. Use ppa:apptainer/ppa. Same path on all nodes for fleet consistency.
+APPTAINER_CACHEDIR and APPTAINER_TMPDIR matter — defaults are ~/.apptainer/cache and /tmp; both can fill OS disk. Always point at /scratch. Should become a /etc/profile.d/apptainer-defaults.sh fleet-wide.
+SIFs stay on /scratch pre-NetApp — /scratch/cluster-software/containers/. After NetApp lands, rsync to /software/containers/. SIFs are immutable artifacts — migration is a file copy, not a rebuild. Apptainer cache stays on local /scratch forever, never migrate it to NetApp.
+sacctmgr show association tree is the authoritative view of account hierarchy — show account with ParentName column lies (shows empty ParentName when nesting is correct).
+sacctmgr modify account ... set parent= — when it returns "Request didn't affect anything", verify with tree view; the state may already be correct.
+Slurm requires --account= on submission — AccountingStorageEnforce=associations is on. Default account behavior was uncertain; admin pattern is to be in research parent.
+Prolog/Epilog scripts in slurm.conf must either exist or be commented out — non-existent scripts cause every job to drain the node with Reason=Prolog error. PrologFlags=Contain stays valid without a Prolog script.
+slurm.conf must be byte-identical fleet-wide — register_gpu_nodes.sh (Nick's script, runs from cpu01) handles install + munge.key + config push + daemon restart in one go.
+Orphan slurmd after failed restart — systemctl restart slurmd can leave a daemon running if it was mid-prolog-failure when SIGTERM arrived. Symptom: "Address already in use" on port 6818. Fix: find PID via ps aux | grep slurmd, kill it manually, then systemctl start slurmd.
+
+What's open / needs decision
+Cheminformatics partitioning conversation
+
+Take the soft-priority gpu02 model + cgpu01 dedicated to chem back to the author
+The author's partitioningv2.docx needs the pool-mode assumptions removed (dev-cpu (Both), interactive (Both), services failover language)
+Reservation workflow for multi-day FEP+ campaigns
+Always-on services resource reservation on cgpu01 (mechanism + sizing)
+
+Pending from punch list
+
+AD/SSSD join across all 4 nodes
+/etc/idmapd.conf with [Translation] Method = umich_ldap and [UMICH_SCHEMA] block
+/home migration (now a fresh-create on NetApp via SSSD fallback_homedir, not a copy migration — no local /home content)
+NetApp volume creation (vol_home, vol_software, vol_projects, vol_datasets, vol_archive)
+Mount points + fstab on all 4 nodes
+Verify AD users resolve fleet-wide (getent passwd loop)
+
+Software stack rollout
+
+Spack bootstrap on /software (when NetApp available)
+Per-sub-account container catalogs
+Ansible role for containers.yml + modulefile generation
+Lmod wrapper template for the burdentesting container (LC_ALL=C to suppress locale noise, bind mounts for /scratch, /projects, /datasets, list of wrapped commands)
+User demo session for burden testing (gates the Lmod wrapper design — bind mounts depend on where their reference data lives)
+
+Other
+
+Web monitoring (slurmrestd + Grafana on cgpu01, behind reverse proxy)
+/etc/profile.d/apptainer-defaults.sh on all 4 nodes (currently set per-user in ~/.bashrc)
+MpiDefault=none in slurm.conf (deferred to next maintenance window)
+Update Workload_Partition_Mapping doc once partitioning lands
+
+Files staged
+
+/scratch/cluster-software/containers/burdentesting-latest.sif — on cpu01 only, pre-NetApp
+/scratch/cluster-software/sources/ — empty, intended for Dockerfile archival
+~/run-dir/burdentesting_smoke.sh and ~/run-dir/burdentesting_slurm_smoke.sh — Nick's local copies (renamed from session output)
+register_gpu_nodes.sh — already in Nick's run-dir
+
+
+That should bring the new instance up to where we are. The biggest open thread is the partitioning conversation with David — everything else is either documented or in the punch list.

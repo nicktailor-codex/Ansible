@@ -1,0 +1,175 @@
+Proposal for On-Premises Computational Chemistry Configuration 
+ 
+1. The ask 
+Four nodes were procured in the current infrastructure refresh: INSIIUKGPU01 and INSIIUKGPU02 (Heavy GPU compute, H200 NVL 141 GB HBM3e), INSIIUKCGPU01 (Lightweight GPU and inference, L4 24 GB GDDR6), and INSIIUKCPU01 (High-memory CPU, 128 vCPU / 512 GB RAM, no GPU). The procurement rationale, agreed during specification and purchase discussions, earmarked INSIIUKCGPU01 for Computational Chemistry services and one of the two H200 nodes for Computational Chemistry scientific workflows. The second H200 is available for broader use. 
+This proposal formalises that allocation: INSIIUKCGPU01 as the Services node and INSIIUKGPU01 as the Development node for Computational Chemistry, allocated exclusively to the cheminformatics sub-account. INSIIUKGPU02 and INSIIUKCPU01 remain in the shared research pool for bioinformatics and statistical genetics. The two cheminformatics nodes are managed under a SLURM scheduler with partitions that guarantee quality of service for latency-sensitive inference while enabling fair share on long research runs (section 5). Computational Chemistry does not require the high-memory node, since the workload mix sits within the 256 GB host-RAM tier. 
+The case for dedicated allocation rests on timing. Computational Chemistry is in an active build-out phase. The stack, workflows, and scientist-facing services are being established, validated, and handed to users. Operational stability during this period is essential, and ad-hoc reallocation or contention with unrelated workloads slows buildout significantly. This proposal requests a stable baseline, not an indefinite ring-fence. The allocation can be revisited through standard governance at any time should business priorities shift at iiuk or at Insmed. 
+2. Rationale 
+Four operational drivers reinforce the on-prem-with-scheduling approach. Interactive tooling (virtual screening UIs, model inference endpoints) suffers from cloud round-trip latency. Long-running jobs such as molecular dynamics, Boltz2 sampling, and Chemprop training are repeatedly disrupted by spot pre-emption, session time-outs, and scheduling contention on shared cloud pools. A proper scheduler on dedicated nodes protects user-facing services from being blocked behind multi-day research jobs, which is the failure mode that undifferentiated shared compute produces. The economics also favour on-prem: cloud compute and egress for our workload profile (sustained GPU utilisation, large local NVMe I/O, frequent result retrieval) are out of proportion to hardware and software already procured, with estimated cloud-equivalent spend of approximately £45 to 50k per year before storage and egress that this allocation avoids. 
+Licensing reinforces the case. Schrödinger’s GPU-accelerated suite (Desmond, FEP+, WaterMap) uses hardware-bound licensing tied to the specific GPU device, and OpenEye (ROCS, OEDocking) uses node-locked licensing bound to MAC address. Cloud deployment of either creates recurrent licence invalidation at instance restart, requiring re-hosting requests with a 24 to 48 hour turnaround and risking mid-campaign outages on long-running FEP+ calculations. On-prem deployment provides stable, one-time licence binding. 
+3. Proposed allocation 
+Node 	Role 	Specification 	Primary workloads 
+INSIIUKGPU01 	Development 	64 vCPU / 256 GB RAM / ~7 TB NVMe RAID 0 scratch / H200 NVL 141 GB HBM3e 	MD and free energy (Desmond, FEP+, WaterMap; OpenMM, GROMACS); co-folding (Boltz2); ML training (Chemprop, generative models); exploratory research compute 
+INSIIUKCGPU01 	Services 	64 vCPU / 256 GB RAM / ~7 TB NVMe RAID 0 scratch / L4 24 GB GDDR6 	Shape and pharmacophore search (ROCS); chemical, patent and reactions search; retrosynthesis tools; model inference (sklearn, Chemprop); user-facing REST APIs. Full mapping in section 4. 
+Placement principle. Memory tier is the primary differentiator for job placement. Workloads requiring more than 256 GB host RAM must run on INSIIUKCPU01. GPU memory is the second axis: workloads exceeding the L4 24 GB ceiling must run on an H200 node (INSIIUKGPU01 or INSIIUKGPU02). The Computational Chemistry workload mix sits within the 256 GB host-RAM tier. Placement between INSIIUKCGPU01 and INSIIUKGPU01 is therefore driven by GPU memory and run length, not RAM. 
+Hardware fit. The H200’s 141 GB HBM3e is essential for biophysics simulations (molecular dynamics and free-energy methods such as FEP+), co-folding (Boltz2), and model training. This capacity would be wasted on inference. The L4 is purpose-built for inference economics, handles CPU-bound workflows (ROCS, virtual screening, chemical, patent and reactions search) efficiently on the same box, and accommodates Glide docking, Maestro sessions, and small QSAR or ML inference within its 24 GB ceiling. 
+Storage. Each node has approximately 7 TB of local NVMe RAID 0 scratch and access to NetApp NFS (INSUKNETAPP01, ONTAP 9.15.1P3, 2-node HA, NFSv4.1 with NFSv3 fallback, LACP-bonded) for persistent output. Local NVMe scratch drives per-node sizing. NetApp NFS persistent output drives long-term capacity planning. Local NVMe delivers sustained multi-GB/s throughput with microsecond latency, much faster than cloud persistent disk, and is required for multi-day FEP+ campaigns, MD trajectory I/O, and ML training-data access. Cloud ephemeral SSD matches throughput but is lost at instance stop, which is untenable for these workloads. Persistent storage uses the planned NetApp volume layout: reference data (compound libraries, prepared protein structures, ML training corpora) on vol_datasets; persistent outputs (cleaned trajectories, final models, MLflow artefacts) on vol_projects; software installs (Schrödinger, OpenEye, Spack tree) on vol_software; user homes on vol_home (snapshot-protected); retired campaigns on vol_archive. 20 to 30% of node scratch is reserved as headroom for OS, package cache, swap, and tool temporary files, per the sizing reference. The workload budgets in section 4 do not include this overhead. 
+4. Tool-to-node mapping 
+The mapping below reflects current workload understanding, grounded in the workload sizing reference (Tailor). Per-job storage, host RAM, and GPU memory budgets per workload class are documented in that reference and will be validated against typical and maximum job sizes per project once SLURM accounting is live. Entries on INSIIUKCGPU01 default to services QoS unless they are persistent endpoints (MLflow, Chemprop, sklearn or generative-model APIs, retrosynthesis API, chemical and patent search service), which run under always-on QoS (see section 5). Two placements are deliberately left open at the bottom pending decisions during buildout. 
+Tool or function 	Node 	Partition 	Projects 	Notes 
+Schrödinger FEP+ (including WaterMap) 	INSIIUKGPU01 	dev-gpu 	MIKA, PINE, PEAR 	Hardware-bound licence; H200 only; large campaigns may need staging; reservations for multi-day runs 
+Desmond MD (including long simulations) 	INSIIUKGPU01 	dev-gpu 	SOLAR, MARS 	Trajectory output dominant; long simulations H200 only 
+Schrödinger CPU tools (LigPrep, Glide, MacroModel) 	Both 	dev-cpu / services 	All 	CPU licensing; Glide fits L4 easily; routed per job size 
+Maestro (interactive) 	INSIIUKCGPU01 	interactive 	All 	GUI session, low I/O, fits L4 
+OpenEye ROCS 	INSIIUKCGPU01 	services 	All 	MAC-locked licence; L4 GPU mode, fits L4 easily 
+OpenEye OEDocking 	INSIIUKCGPU01 	services 	MIKA, PINE, MARS 	MAC-locked licence; fits L4 easily 
+MD (OpenMM, GROMACS) 	INSIIUKGPU01 	dev-gpu 	SOLAR, MARS 	Open source; GPU essential 
+Co-folding (Boltz2) 	INSIIUKGPU01 	dev-gpu 	SOLAR, MARS 	H200 only; research only, not a service; budget not in sizing reference, validate against early runs 
+Chemprop training 	INSIIUKGPU01 	dev-gpu 	All 	PyTorch; long GPU runs 
+Chemprop inference 	INSIIUKCGPU01 	always-on / services 	All 	Always-on REST endpoint; read-mostly, fits L4 easily 
+sklearn, XGBoost, LightGBM inference 	INSIIUKCGPU01 	always-on / services 	All 	Always-on REST endpoint; CPU only, low I/O 
+MLflow tracking server 	INSIIUKCGPU01 	always-on 	All 	Always-on REST endpoint; persistent state on NetApp 
+Chemical, patent, reactions search 	INSIIUKCGPU01 	always-on 	SOLAR, MARS, PEAR 	Always-on REST endpoint; CPU and I/O heavy; user-facing 
+Retrosynthesis tools 	INSIIUKCGPU01 	always-on 	SOLAR, MARS 	Always-on REST endpoint; read-mostly 
+Generative models (training) 	INSIIUKGPU01 	dev-gpu 	SOLAR, MARS 	Long GPU runs; large models H200 only 
+Generative models (inference) 	INSIIUKCGPU01 	always-on / services 	SOLAR, MARS 	Always-on REST endpoint; molecular generation; fits L4 easily 
+Virtual screening (RDKit, library-scale) 	INSIIUKCGPU01 (burst dev-cpu) 	services / dev-cpu 	SOLAR, MARS 	Mostly CPU, low I/O; backfills idle dev-cpu 
+Simulations Plus (ADMET Predictor, GastroPlus) 	INSIIUKCGPU01 	services 	All 	CPU-bound; Linux support to be confirmed 
+KNIME Business Hub 	TBD 	TBD 	All 	Open decision: on-prem vs GCP (see below) 
+LLM serving for med chemists 	TBD 	TBD 	SOLAR, MARS 	Open decision: self-hosted OSS vs API (see below) 
+KNIME Business Hub. Decision on whether to migrate the existing GCP KNIME Hub on-prem as the core DevOps platform for Computational Chemistry workflows or retain the GCP deployment. Trade-offs include licensing cost, workflow-execution latency against on-prem compute, and integration with downstream services. 
+LLM serving for med chemists. Decision on whether to stand up self-hosted open-source models (Llama, Qwen or similar) on the Development node, adopt a commercial API (for example Claude) with local retrieval augmentation, or run a hybrid configuration. Trade-offs include information-security posture for sensitive project content, model quality, latency, and impact on H200 utilisation headroom. 
+Both decisions to be finalised in the first three months of operation, informed by early utilisation data from the on-prem cluster. 
+5. Scheduling and access 
+SLURM manages both Computational Chemistry nodes. Partitions reflect workload class and QoS reflects priority. Persistent inference services run continuously under the always-on QoS rather than being scheduled per request. Pre-emption on INSIIUKCGPU01 prevents services from being blocked by short batch jobs on the same node. Fairshare on INSIIUKGPU01 shares GPU research time among Computational Chemistry users. Access is restricted to the cheminformatics SLURM sub-account; bioinformatics and statistical genetics workloads run on INSIIUKCPU01 and INSIIUKGPU02 in the shared research pool. 
+Partitions 
+Partition 	Node(s) 	Wall-time 	Default QoS 	Purpose 
+services 	INSIIUKCGPU01 	≤ 4 h 	services 	Short batch inference, dispatched jobs, ROCS, virtual screening 
+dev-gpu 	INSIIUKGPU01 	≤ 14 d 	dev 	MD, FEP+, training, co-folding 
+dev-cpu 	Both (backfill) 	≤ 7 d 	batch 	CPU batch; library screening 
+interactive 	Both 	≤ 8 h 	interactive 	Development sessions, debugging, Maestro 
+QoS and priority 
+QoS 	Priority 	MaxWall 	Pre-empts 	Behaviour 
+always-on 	2000 	unlimited 	none 	Long-lived inference REST endpoints; not pre-emptible; reserved capacity on INSIIUKCGPU01 
+services 	1000 	4 h 	batch and interactive on INSIIUKCGPU01 	Short batch inference, dispatched jobs 
+interactive 	300 	8 h 	none 	Pre-emptible by services 
+dev 	100 	14 d 	none 	Fairshare-driven 
+batch 	50 	7 d 	none 	Backfill on both nodes; pre-emptible 
+Multifactor priority weights are configured to favour Fairshare within dev and QoS between partitions, with a moderate Age weight to prevent long-job starvation. Always-on services reserve a fixed share of INSIIUKCGPU01, sized during buildout (approximately 8 to 16 vCPU, 32 to 64 GB RAM, and a partial L4 share). Remaining capacity is available to services, batch, and interactive. Reservations are available on dev-gpu for multi-day FEP+ campaigns via a documented procedure. 
+Access control 
+Identity is provided by Active Directory via SSSD and Kerberos. A Unix-visible AD group for the Computational Chemistry team (provisionally compchem; final name to be confirmed by IT) maps to membership for access control. Access is enforced at three layers: 
+1. SSH. AllowGroups compchem ops-admins on both nodes (the AD group exposed as a POSIX group through SSSD). Non-members are rejected at the SSH layer, with no shell and no SLURM submission. 
+2. SLURM. All team members are associated with the cheminformatics sub-account under the research parent in slurmdbd (alongside bioinformatics and statistical_genetics under the same parent). All partitions on INSIIUKCGPU01 and INSIIUKGPU01 declare AllowAccounts=cheminformatics, which prevents jobs from other sub-accounts being scheduled on these nodes. 
+3. Filesystem. Local /scratch is owned root:compchem mode 2770 (setgid); per-user subdirectories /scratch/$USER are mode 0750. NetApp paths mirror this configuration. 
+Interactive use is gated through srun --pty or salloc into the interactive partition. The pam_slurm_adopt module binds SSH sessions to active allocations, which prevents users from running long-running sessions outside SLURM. Cross-team access is granted via a documented request that adds the user to compchem; there are no per-node exceptions and no shadow accounts. 
+Inference API exposure and network access 
+Always-on inference services are exposed as REST APIs over HTTPS, bound to specific ports on INSIIUKCGPU01 and routed through a single reverse proxy (nginx or traefik) running on the same node. The reverse proxy handles TLS termination, request routing to per-service ports, authentication enforcement, and rate limiting. 
+1. Internal corporate network. API endpoints are reachable via internal DNS (for example compchem-api.iiuk.insmed.local resolving to INSIIUKCGPU01:443). No tunnel is required for users on the corporate LAN. 
+2. Remote employees and external collaborators. Access is via IT-managed tunnel infrastructure (corporate VPN or equivalent), with an IP allowlist at the tunnel endpoint scoped to specific addresses agreed with IT (home offices, partner sites, other Insmed locations). The tunnel terminates inside the corporate network; from there the request reaches the same internal DNS endpoint. 
+3. Service-to-service automation. KNIME workflows, scheduled jobs, and internal scripts call the same APIs over the internal network using service-account credentials. 
+API authentication does not rely on network perimeter alone. Every endpoint enforces a token (API key, JWT, or mTLS depending on workload sensitivity) issued by the compchem service and tied to the requester’s Insmed identity. Audit logs of API calls are persisted on NetApp for compliance traceability. 
+Accounting 
+SLURM sacct and sreport provide per-user and per-project utilisation reporting. The Tier 2 and Tier 3 capacity-escalation triggers in section 6 are derived from this data over rolling 30-day windows. 
+Per-node aggregate scenarios 
+The scenarios below are validated against the workload sizing reference for the Computational Chemistry mix. Peak scratch values exclude the 20 to 30% headroom reserve. 
+Scenario 	Node 	Concurrent jobs 	Peak scratch 
+Single FEP+ medium campaign 	INSIIUKGPU01 	1 	approximately 1 TB 
+Single FEP+ large campaign 	INSIIUKGPU01 	1 	approximately 3 to 5 TB 
+FEP+ medium plus Chemprop training 	INSIIUKGPU01 	2 	approximately 1.5 TB 
+Mixed services day (always-on endpoints, ROCS, virtual screening) 	INSIIUKCGPU01 	4 to 6 	approximately 300 to 500 GB 
+Heavy day: FEP+ large plus parallel Chemprop training 	INSIIUKGPU01 	2 	approximately 5 to 6 TB (consumes scratch headroom) 
+Sizing implications. Approximately 7 TB scratch per node is sufficient for routine FEP+ medium campaigns, Chemprop and generative-model training, all services workloads, and reasonable concurrency on either node. Capacity becomes tight for very large FEP+ library screens running concurrently with other heavy GPU workloads on INSIIUKGPU01, which exceed comfortable scratch budget once the headroom reserve is applied and require campaign staging or scheduling separation. Scratch-pressure events will be flagged through SLURM accounting. 
+Environment provisioning. Spack is used for system-level scientific software (GROMACS, OpenMM, AmberTools, MPI and BLAS variants, compiler toolchains, RDKit C++ extensions), exposed via Lmod-based module load. A spack.yaml environment file in version control pins versions for reproducibility. Singularity or Apptainer containers are used for user-defined workflow environments (Python ML stacks, inference REST services, custom toolchains), with baseline images maintained alongside Spack environments. Cluster configuration is codified as Ansible playbooks for reproducibility and recovery (in progress with Nick). Detailed configuration is being agreed with Nick. 
+6. Risks and mitigations 
+Single point of failure on Services node. Mitigated by fall-back of critical inference from INSIIUKCGPU01 to INSIIUKGPU01 via SLURM partition configuration, and short-term cloud burst capacity for sustained outages. 
+SLURM configuration complexity. Mitigated by a deliberately simple partition design with QoS classes rather than a federated multi-cluster setup; supported by documented runbooks for common failure modes. 
+Data durability on local NVMe scratch. Local NVMe is scratch, not primary storage. Persistent outputs are written to NetApp NFS at job completion. A nightly sync from scratch to NetApp covers anything left on-node overnight (target paths to be confirmed with IT). User guidance reinforces that scratch is ephemeral. 
+Scratch pressure on Development node. Multi-TB FEP+ campaigns running concurrently with other heavy workloads can approach the 7 TB ceiling on INSIIUKGPU01 once headroom is reserved. Mitigated by SLURM scratch reservations on the dev-gpu partition for large campaigns, queue-time enforcement of campaign separation, and staging of intermediate trajectories to NetApp during long runs. 
+External API access via IT tunnel. Exposing inference services beyond the corporate LAN expands attack surface. Mitigated by a tunnel-side IP allowlist scoped to specific addresses agreed with IT, per-API authentication independent of tunnel auth, TLS-only endpoints behind the reverse proxy, rate limiting at the proxy, audit logging of all API calls to NetApp, and a quarterly review of the IP allowlist with IT. 
+Capacity shortfall. Addressed through a graduated escalation path rather than premature procurement. Tier 1 (short-term burst): non-Schrödinger workloads (Chemprop and generative-model training, OpenMM and GROMACS MD) bursted to specialist cloud GPU providers for discrete peaks, accepting that Schrödinger workloads remain on-prem due to licence binding. Tier 2 (medium-term): request reallocation of INSIIUKGPU02 (currently in the broader pool) to Computational Chemistry, contingent on sustained demand demonstrated via SLURM accounting. Tier 3 (procurement): trigger additional GPU node purchase when dev-gpu average queue wait exceeds 24 hours over a rolling 30-day window. 
+7. Phased delivery plan 
+Assumptions. Nodes are physically racked, networked, and powered. Nick is engaged from the start. IT is able to provision LDAP, NetApp paths, and DNS without long delay. Phases overlap where dependencies allow. 
+Phase 0: Pre-conditions (runs in parallel with all subsequent phases) 
+Owner: IT and procurement. 
+•	AD group for the Computational Chemistry team (provisionally compchem) provisioned and populated against the team roster. 
+•	NetApp NFS paths agreed and exported (scratch-sync target, persistent output, reference data). 
+•	Internal DNS allocated (compchem-api.iiuk.insmed.local or equivalent). 
+•	IP allowlist sourced from team members (home offices, partner sites, other Insmed locations). 
+•	Nick onboarded; proposal approved. 
+Completion criteria: every pre-condition is in place; nothing in this phase is blocking. 
+Phase 1: Foundation 
+Owner: Nick. 
+•	OS install and hardening on both nodes (Ubuntu 24.04, in line with the wider cluster build). 
+•	AD via SSSD bound; AllowGroups compchem ops-admins enforced at SSH. 
+•	NetApp NFS mounted on both nodes. 
+•	Local /scratch filesystem configured: root:compchem mode 2770, with per-user subdirectories on first login. 
+•	Monitoring agents installed to IT’s standard. 
+Completion criteria: a compchem member can SSH to both nodes and see scratch and NetApp mounts; a non-member is rejected at the SSH layer; filesystem permissions and monitoring are operational. 
+Phase 2: Scheduling and base software 
+Owner: Nick. 
+•	SLURM controller and accounting database on INSIIUKCPU01 with MariaDB backend; slurmd registered on both Computational Chemistry compute nodes. 
+•	Partitions, QoS, accounts, and fairshare configured per section 5. 
+•	pam_slurm_adopt enforced for SSH-into-allocation binding. 
+•	Spack bootstrapped; first wave installed (GCC toolchain, OpenMPI, BLAS and LAPACK, GROMACS, OpenMM, AmberTools, Python). 
+•	Singularity or Apptainer installed. 
+•	Baseline container images built (Python ML stack with PyTorch, RDKit, Chemprop). 
+•	spack.yaml and image definitions held in version control. 
+Completion criteria: an srun from a compchem user succeeds on each partition; module load gromacs and similar resolve cleanly; a baseline container runs end to end; environment definitions are tracked in version control. 
+Phase 3: Licensed software, Development node operational 
+Owner: Nick and David. 
+•	Schrödinger suite installed on INSIIUKGPU01; GPU-bound licence registered against the H200. 
+•	Schrödinger CPU tools installed on both nodes. 
+•	OpenEye toolkits installed on INSIIUKCGPU01; MAC-locked licence registered. 
+•	Simulations Plus installation attempted; Linux support confirmed or scoped out. 
+•	First FEP+ campaign from MIKA or PINE as end-to-end validation. 
+•	First Chemprop training run on H200 as validation. 
+Completion criteria: an end-to-end FEP+ campaign completes within the section 4 budget; Chemprop training completes and produces a model artefact; Schrödinger and OpenEye licences are stable across reboots; the Development node is in productive use by at least one project. 
+Phase 4: Services and internal REST APIs (overlaps with Phase 3) 
+Owner: David and Nick. 
+•	Reverse proxy (nginx or traefik) on INSIIUKCGPU01, with TLS via internal CA. 
+•	Internal DNS entries pointed at INSIIUKCGPU01. 
+•	MLflow tracking server deployed as the first always-on SLURM job; this provides the initial validation of the always-on QoS pattern. 
+•	API authentication established: token issuance tied to Insmed identity (JWT or API key). 
+•	Audit log plumbing to NetApp. 
+•	Inference endpoints deployed in priority order: Chemprop inference, then sklearn or XGBoost serving, then generative-model inference, then retrosynthesis, then chemical, patent and reactions search. 
+•	Rate limiting at the proxy. 
+Completion criteria: at least three inference endpoints are reachable from a corporate-LAN laptop with token authentication and return expected results; MLflow is visible from a LAN browser; audit entries are present on NetApp; the always-on QoS pattern is validated on MLflow. 
+Phase 5: External access (IT-dependent) 
+Owner: IT and David. 
+•	IT tunnel configured to Insmed standard (corporate VPN, Cloudflare Access, or equivalent). 
+•	IP allowlist applied at the tunnel endpoint. 
+•	End-to-end test from each allowlisted IP against one API. 
+•	User-facing documentation on reaching the APIs from off-network. 
+Completion criteria: APIs are reachable from every allowlisted external IP and unreachable from anywhere else; off-network access is documented for end users. 
+Phase 6: Validation, refinement, open decisions (rolling, starts as Phase 3 completes) 
+Owner: David. 
+•	User onboarding: documentation, first training session, first wave of users (MIKA and PINE power users) on the cluster. 
+•	Per-job budgets in section 4 validated against first-month actuals; revised where needed. 
+•	Fairshare and QoS weights tuned against accounting data. 
+•	KNIME Business Hub decision finalised (options below). 
+•	LLM serving decision finalised (options below). 
+•	Capacity-escalation triggers (Tier 1, 2, 3) incorporated into the monthly review. 
+KNIME Business Hub: options to evaluate 
+1. On-prem hub on existing compute. Hub services run as always-on jobs on INSIIUKCGPU01 (or INSIIUKGPU01 if H200 utilisation has slack). Lowest workflow-to-compute latency. Consumes approximately 32 to 64 GB RAM and a partial L4 share. Re-uses procured hardware; no new infrastructure ask. 
+2. On-prem hub on separate infrastructure. Dedicated VM, potentially on INSIIUKCPU01 or a new small server. Clean separation; adds an infrastructure dependency. 
+3. Retain GCP deployment. Zero relocation effort. Every workflow dispatching to on-prem SLURM crosses the WAN; result sets travel back to GCP for downstream steps. Recurring egress and latency cost. 
+4. Hybrid: hub on GCP, executor on-prem. Uses KNIME’s distributed-executor model. The hub continues to manage workflows; executors run jobs against SLURM on-prem. Workflow latency to compute is local and the existing hub investment is preserved. Most configuration complexity; depends on Insmed’s KNIME licence terms permitting distributed executors. 
+Recommendation: option 4 (hybrid) where the licence permits, otherwise option 1. Option 3 is the least suitable in the long term given the volume of workflow dispatches expected from the cluster. 
+LLM serving for med chemists: options to evaluate 
+1. Self-hosted open-source on the Development node. Llama 3.3 70B, Qwen 2.5 72B, or equivalent, served from INSIIUKGPU01. Best information-security position, since no project content leaves the corporate boundary. Consumes H200 capacity that would otherwise serve FEP+, MD, and training. Model quality is below leading commercial models on chemistry reasoning and multi-step tasks. Inference concurrency is limited. 
+2. Commercial API with local RAG. Claude, GPT, or Gemini via an enterprise contract, with a local vector store over Insmed documents and prior project artefacts. Best model quality and lowest latency. Project content reaches the vendor inside prompts, governed by the vendor’s enterprise data-handling terms. Compliance question against Insmed’s information classification policy. 
+3. Hybrid routing. Local OSS handles prompts containing sensitive markers (project codes, structures, target identities); a commercial API handles general queries (literature, methodology, code). Requires a routing classifier and a content-tagging convention. Most operationally complex; covers the IP-sensitivity case without giving up commercial-model quality entirely. 
+Recommendation: the choice depends on Insmed’s policy on third-party AI vendors handling project content. Where this is acceptable under enterprise terms, option 2 is preferred. Model quality matters for chemistry queries, and self-hosting on a shared H200 reduces capacity for research workloads. Where third-party processing is not acceptable, option 3 is preferred over option 1; option 1 on its own will not meet user expectations on quality. 
+Completion criteria: the first monthly utilisation report is produced; per-job budgets are refreshed against actuals; KNIME and LLM decisions are documented and implemented; capacity-escalation triggers are active in the monthly review. 
+Phase 7: Steady state (ongoing once Phase 6 outputs are in place) 
+•	Monthly review of utilisation, queues, scratch pressure, and accounting. 
+•	Quarterly review of the IP allowlist with IT. 
+•	Triggered: Tier 1, 2, or 3 capacity escalation per section 6. 
+Completion criteria: monthly and quarterly reviews run on cadence; capacity-escalation triggers are honoured. 
+Critical path and delivery risks 
+The critical path runs through pre-conditions, foundation, SLURM, licensed software, internal APIs, and external access, in that order. Parallel tracks (Spack and container builds, API code, user documentation) overlap with this path and shorten elapsed time but do not change the sequence. 
+Delivery-specific risks not already covered in section 6: 
+•	IT throughput on LDAP, DNS, and tunnel provisioning. Out of our direct control. Mitigated by parallel-tracking Nick’s work on anything that does not depend on it. 
+•	Schrödinger and OpenEye licence binding. Hardware-bound and MAC-locked respectively. Coordinate timing with each vendor’s support before Phase 3 to avoid activation lag becoming the critical path. 
+•	First-month accounting noise. Early utilisation data is unreliable while users adapt to the system. Validation of per-job budgets is therefore scheduled for the second month, not the first. 
+

@@ -130,7 +130,7 @@ sudo sacctmgr -i add account research \
   Description="Research organisation root" \
   Organization=research 2>/dev/null || true
 
-for grp in bioinformatics cheminformatics statistical_genetics; do
+for grp in bioinformatics compchem human_genetics; do
   sudo sacctmgr -i add account "$grp" \
     Parent=research \
     Description="$grp research group" \
