@@ -1,0 +1,74 @@
+ntailor@insiiukcpu01:~/run-dir$ ./pyxis_burden_smoke.sh 
+
+╭────────────────────────────────────────────────────────╮
+│  Pyxis + Enroot Burdentesting Smoke Test              │
+╰────────────────────────────────────────────────────────╯
+
+▸ Configuration
+  Partition    cpu
+  Account      research
+  Image        docker://egardner413/mrcepid-burdentesting:latest
+  Workdir      /scratch/ntailor
+  User         ntailor
+  Host         insiiukcpu01
+  In-script    /scratch/ntailor/burden_in_container.sh
+
+▸ Submitting job
+  ✓ Submitted job 33
+
+▸ Waiting for completion
+  [   0s] state: PENDING                                              
+  [   2s] state: RUNNING                                              
+  [ 194s] state:                                                      
+  ✓ Job finished in 196s                                              
+
+▸ Job details
+  JobID        33
+  Node         insiiukcpu01
+  Elapsed      00:03:17
+  State        COMPLETED
+  ExitCode     0:0
+  Output       /scratch/ntailor/burden-pyxis-33.out
+  Stderr       /scratch/ntailor/burden-pyxis-33.err
+
+▸ Pyxis evidence (from stderr)
+    │ pyxis: importing docker image: docker://egardner413/mrcepid-burdentesting:latest
+    │ pyxis: imported docker image: docker://egardner413/mrcepid-burdentesting:latest
+
+▸ Content checks
+
+  ── 1. Binary tools ──
+    [PASS] regenie
+    [PASS] bolt
+    [PASS] samtools
+    [PASS] bcftools
+    [PASS] plink
+    [PASS] plink2
+    [PASS] bedtools
+    [PASS] metal
+    [PASS] gcta
+    [PASS] qctool
+    [PASS] bgenix
+
+  ── 2. R stack ──
+    [PASS] R_interpreter
+    [PASS] R_packages
+
+  ── 3. SAIGE custom-build scripts ──
+    [PASS] step1_fitNULLGLMM.R
+    [PASS] step2_SPAtests.R
+    [PASS] step3_LDmat.R
+    [PASS] createSparseGRM.R
+
+  ── 4. VEP and Python ──
+    [PASS] VEP_perl
+    [PASS] python
+    [PASS] general_utilities
+
+═══════════════════════════════════════════════════════
+ Result: 20 passed, 0 failed  (of 20 checks)
+═══════════════════════════════════════════════════════
+
+╭──────────────────────────────────────────╮
+│  ✓ PASS  Container content validated     │
+╰──────────────────────────────────────────╯
