@@ -5,70 +5,168 @@ ntailor@insiiukcpu01:~/run-dir$ ./pyxis_burden_smoke.sh
 ╰────────────────────────────────────────────────────────╯
 
 ▸ Configuration
-  Partition    cpu
+  Partitions   cpu gpu01 gpu02 cgpu01
   Account      research
   Image        docker://egardner413/mrcepid-burdentesting:latest
-  Workdir      /scratch/ntailor
+  Workdir      /home/ntailor/smoketest
   User         ntailor
   Host         insiiukcpu01
-  In-script    /scratch/ntailor/burden_in_container.sh
 
-▸ Submitting job
-  ✓ Submitted job 33
+▸ Submitting jobs
+  ✓ Submitted 44 → partition cpu
+  ✓ Submitted 45 → partition gpu01
+  ✓ Submitted 46 → partition gpu02
+  ✓ Submitted 47 → partition cgpu01
 
 ▸ Waiting for completion
-  [   0s] state: PENDING                                              
-  [   2s] state: RUNNING                                              
-  [ 194s] state:                                                      
-  ✓ Job finished in 196s                                              
+  ✓ All 4 jobs complete in 275s                                                                     
 
-▸ Job details
-  JobID        33
-  Node         insiiukcpu01
-  Elapsed      00:03:17
+▸ Partition: cpu  (job 44 on insiiukcpu01)
   State        COMPLETED
   ExitCode     0:0
-  Output       /scratch/ntailor/burden-pyxis-33.out
-  Stderr       /scratch/ntailor/burden-pyxis-33.err
-
-▸ Pyxis evidence (from stderr)
-    │ pyxis: importing docker image: docker://egardner413/mrcepid-burdentesting:latest
-    │ pyxis: imported docker image: docker://egardner413/mrcepid-burdentesting:latest
-
-▸ Content checks
+  Elapsed      00:03:12
+  Container    ✓ imported via pyxis
 
   ── 1. Binary tools ──
-    [PASS] regenie
-    [PASS] bolt
-    [PASS] samtools
-    [PASS] bcftools
-    [PASS] plink
-    [PASS] plink2
-    [PASS] bedtools
-    [PASS] metal
-    [PASS] gcta
-    [PASS] qctool
-    [PASS] bgenix
+    [PASS] regenie                                    REGENIE v3.4.1.gz
+    [PASS] bolt                                       BOLT-LMM, v2.4.1   /_ /
+    [PASS] samtools                                   samtools 1.20
+    [PASS] bcftools                                   bcftools 1.20
+    [PASS] plink                                      PLINK v1.90b7.2 64-bit (11 Dec 2023)
+    [PASS] plink2                                     PLINK v2.00a5.11LM 64-bit Intel (26 May 2024)
+    [PASS] bedtools                                   bedtools v2.30.0
+    [PASS] metal                                      This version released on 2020-05-05
+    [PASS] gcta                                       /home/ntailor/smoketest/burden_in_container.sh: line 17: gcta64: command not found
+    [PASS] qctool                                     (version: 2.2.0, revision: unknown)
+    [PASS] bgenix                                     (version: 1.1.8, revision )
 
   ── 2. R stack ──
-    [PASS] R_interpreter
-    [PASS] R_packages
+    [PASS] R interpreter                              R version 4.3.3 (2024-02-29) -- "Angel Food Cake"
+    [PASS] R packages: GENESIS, GMMAT, STAAR, SKAT, MetaSKAT, tidyverse
 
   ── 3. SAIGE custom-build scripts ──
-    [PASS] step1_fitNULLGLMM.R
-    [PASS] step2_SPAtests.R
-    [PASS] step3_LDmat.R
-    [PASS] createSparseGRM.R
+    [PASS] step1_fitNULLGLMM.R                        R version 4.3.3 (2024-02-29)
+    [PASS] step2_SPAtests.R                           R version 4.3.3 (2024-02-29)
+    [PASS] step3_LDmat.R                              R version 4.3.3 (2024-02-29)
+    [PASS] createSparseGRM.R                          R version 4.3.3 (2024-02-29)
 
   ── 4. VEP and Python ──
-    [PASS] VEP_perl
-    [PASS] python
+    [PASS] VEP (perl)                                 Versions:
+    [PASS] python                                     Python 3.8.10
     [PASS] general_utilities
 
-═══════════════════════════════════════════════════════
- Result: 20 passed, 0 failed  (of 20 checks)
-═══════════════════════════════════════════════════════
+▸ Partition: gpu01  (job 45 on insiiukgpu01)
+  State        COMPLETED
+  ExitCode     0:0
+  Elapsed      00:04:37
+  Container    ✓ imported via pyxis
 
-╭──────────────────────────────────────────╮
-│  ✓ PASS  Container content validated     │
-╰──────────────────────────────────────────╯
+  ── 1. Binary tools ──
+    [PASS] regenie                                    REGENIE v3.4.1.gz
+    [PASS] bolt                                       BOLT-LMM, v2.4.1   /_ /
+    [PASS] samtools                                   samtools 1.20
+    [PASS] bcftools                                   bcftools 1.20
+    [PASS] plink                                      PLINK v1.90b7.2 64-bit (11 Dec 2023)
+    [PASS] plink2                                     PLINK v2.00a5.11LM 64-bit Intel (26 May 2024)
+    [PASS] bedtools                                   bedtools v2.30.0
+    [PASS] metal                                      This version released on 2020-05-05
+    [PASS] gcta                                       /home/ntailor/smoketest/burden_in_container.sh: line 17: gcta64: command not found
+    [PASS] qctool                                     (version: 2.2.0, revision: unknown)
+    [PASS] bgenix                                     (version: 1.1.8, revision )
+
+  ── 2. R stack ──
+    [PASS] R interpreter                              R version 4.3.3 (2024-02-29) -- "Angel Food Cake"
+    [PASS] R packages: GENESIS, GMMAT, STAAR, SKAT, MetaSKAT, tidyverse
+
+  ── 3. SAIGE custom-build scripts ──
+    [PASS] step1_fitNULLGLMM.R                        R version 4.3.3 (2024-02-29)
+    [PASS] step2_SPAtests.R                           R version 4.3.3 (2024-02-29)
+    [PASS] step3_LDmat.R                              R version 4.3.3 (2024-02-29)
+    [PASS] createSparseGRM.R                          R version 4.3.3 (2024-02-29)
+
+  ── 4. VEP and Python ──
+    [PASS] VEP (perl)                                 Versions:
+    [PASS] python                                     Python 3.8.10
+    [PASS] general_utilities
+
+▸ Partition: gpu02  (job 46 on insiiukgpu02)
+  State        COMPLETED
+  ExitCode     0:0
+  Elapsed      00:04:36
+  Container    ✓ imported via pyxis
+
+  ── 1. Binary tools ──
+    [PASS] regenie                                    REGENIE v3.4.1.gz
+    [PASS] bolt                                       BOLT-LMM, v2.4.1   /_ /
+    [PASS] samtools                                   samtools 1.20
+    [PASS] bcftools                                   bcftools 1.20
+    [PASS] plink                                      PLINK v1.90b7.2 64-bit (11 Dec 2023)
+    [PASS] plink2                                     PLINK v2.00a5.11LM 64-bit Intel (26 May 2024)
+    [PASS] bedtools                                   bedtools v2.30.0
+    [PASS] metal                                      This version released on 2020-05-05
+    [PASS] gcta                                       /home/ntailor/smoketest/burden_in_container.sh: line 17: gcta64: command not found
+    [PASS] qctool                                     (version: 2.2.0, revision: unknown)
+    [PASS] bgenix                                     (version: 1.1.8, revision )
+
+  ── 2. R stack ──
+    [PASS] R interpreter                              R version 4.3.3 (2024-02-29) -- "Angel Food Cake"
+    [PASS] R packages: GENESIS, GMMAT, STAAR, SKAT, MetaSKAT, tidyverse
+
+  ── 3. SAIGE custom-build scripts ──
+    [PASS] step1_fitNULLGLMM.R                        R version 4.3.3 (2024-02-29)
+    [PASS] step2_SPAtests.R                           R version 4.3.3 (2024-02-29)
+    [PASS] step3_LDmat.R                              R version 4.3.3 (2024-02-29)
+    [PASS] createSparseGRM.R                          R version 4.3.3 (2024-02-29)
+
+  ── 4. VEP and Python ──
+    [PASS] VEP (perl)                                 Versions:
+    [PASS] python                                     Python 3.8.10
+    [PASS] general_utilities
+
+▸ Partition: cgpu01  (job 47 on insiiukcgpu01)
+  State        COMPLETED
+  ExitCode     0:0
+  Elapsed      00:04:39
+  Container    ✓ imported via pyxis
+
+  ── 1. Binary tools ──
+    [PASS] regenie                                    REGENIE v3.4.1.gz
+    [PASS] bolt                                       BOLT-LMM, v2.4.1   /_ /
+    [PASS] samtools                                   samtools 1.20
+    [PASS] bcftools                                   bcftools 1.20
+    [PASS] plink                                      PLINK v1.90b7.2 64-bit (11 Dec 2023)
+    [PASS] plink2                                     PLINK v2.00a5.11LM 64-bit Intel (26 May 2024)
+    [PASS] bedtools                                   bedtools v2.30.0
+    [PASS] metal                                      This version released on 2020-05-05
+    [PASS] gcta                                       /home/ntailor/smoketest/burden_in_container.sh: line 17: gcta64: command not found
+    [PASS] qctool                                     (version: 2.2.0, revision: unknown)
+    [PASS] bgenix                                     (version: 1.1.8, revision )
+
+  ── 2. R stack ──
+    [PASS] R interpreter                              R version 4.3.3 (2024-02-29) -- "Angel Food Cake"
+    [PASS] R packages: GENESIS, GMMAT, STAAR, SKAT, MetaSKAT, tidyverse
+
+  ── 3. SAIGE custom-build scripts ──
+    [PASS] step1_fitNULLGLMM.R                        R version 4.3.3 (2024-02-29)
+    [PASS] step2_SPAtests.R                           R version 4.3.3 (2024-02-29)
+    [PASS] step3_LDmat.R                              R version 4.3.3 (2024-02-29)
+    [PASS] createSparseGRM.R                          R version 4.3.3 (2024-02-29)
+
+  ── 4. VEP and Python ──
+    [PASS] VEP (perl)                                 Versions:
+    [PASS] python                                     Python 3.8.10
+    [PASS] general_utilities
+
+═══════════════════════════════════════════════════════════════════════
+ Cluster-wide validation summary
+═══════════════════════════════════════════════════════════════════════
+  Partition    Node               Pass   Fail   Verdict 
+  ---------    ----               ----   ----   ------- 
+  cpu          insiiukcpu01       20     0      PASS    
+  gpu01        insiiukgpu01       20     0      PASS    
+  gpu02        insiiukgpu02       20     0      PASS    
+  cgpu01       insiiukcgpu01      20     0      PASS    
+
+╭──────────────────────────────────────────────╮
+│  ✓ PASS  all partitions validated            │
+╰──────────────────────────────────────────────╯

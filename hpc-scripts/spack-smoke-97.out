@@ -1,0 +1,65 @@
+
+▸ Environment
+  Hostname       insiiukgpu01.insmed.local
+  Job ID         97
+  Partition      gpu01
+  Node           insiiukgpu01
+  CPUs           2
+  Memory         4096 MB
+  Started        2026-06-01T15:01:30+00:00
+  ✓ Running under Slurm (job 97 on insiiukgpu01)
+
+▸ Lmod module system
+  ✓ module command is available
+  ✓ MODULEPATH includes spack core dir
+  MODULEPATH     /software/spack/share/spack/lmod/linux-ubuntu24.04-x86_64/Core:/etc/lmod/modules:/usr/share/lmod/lmod/modulefiles
+
+▸ Burden stack modules available
+  ✓ regenie available as regenie/
+  ✓ plink available as plink/
+  ✓ plink2 available as plink2/
+  ✓ bcftools available as bcftools/
+  ✓ samtools available as samtools/
+  ✓ htslib available as htslib/
+  ✓ gcta available as gcta/
+  ✓ r available as r/
+  ✓ python available as python/
+  ✓ jq available as jq/
+
+▸ Loading + running tools
+  ✓ module load (all 10) succeeded
+
+▸ Binary paths under /software/spack/opt/spack/
+  ✓ samtools → /software/spack/opt/spack/samtools-1.20-ti2d2aj/bin/samtools
+  ✓ bcftools → /software/spack/opt/spack/bcftools-1.20-47l3tzq/bin/bcftools
+  ✓ gcta64 → /software/spack/opt/spack/gcta-1.94.1-k5l66n5/bin/gcta64
+  ✓ regenie → /software/spack/opt/spack/regenie-3.4.1-fbcvtb7/bin/regenie
+  ✓ R → /software/spack/opt/spack/r-4.3.3-63cdezv/bin/R
+  ✓ python3 → /software/spack/opt/spack/python-3.11.9-vmdzbd2/bin/python3
+  ✓ htsfile → /software/spack/opt/spack/htslib-1.20-mct7sbg/bin/htsfile
+  ✓ plink2 → /software/spack/opt/spack/plink2-2.00a5.11-r3uenkz/bin/plink2
+  ✓ jq → /software/spack/opt/spack/jq-1.7.1-iopjwun/bin/jq
+  ✓ plink → /software/spack/opt/spack/plink-1.9-beta6.27-ntrgsgz/bin/plink
+
+▸ Tool versions match burdentesting image pins
+  ✓ regenie → 'v3.4.1.gz' (expected substring: 3.4.1)
+  ✓ plink → 'PLINK v1.90b6.27 64-bit (10 Dec 2022)' (expected substring: v1.90)
+  ✓ plink2 → 'PLINK v2.00a5.11 AVX2 (26 May 2024)' (expected substring: 2.00a5.11)
+  ✓ bcftools → 'bcftools 1.20' (expected substring: 1.20)
+  ✓ samtools → 'samtools 1.20' (expected substring: 1.20)
+  ✓ htslib → 'htsfile (htslib) 1.20' (expected substring: 1.20)
+  ✓ r → 'R version 4.3.3 (2024-02-29) -- "Angel Food Cake"' (expected substring: 4.3.3)
+  ✓ python → 'Python 3.11.9' (expected substring: 3.11.9)
+  ✓ jq → 'jq-1.7.1' (expected substring: 1.7.1)
+  ✓ gcta → '* version v1.94.1 Linux' (expected substring: 1.94)
+
+▸ Real execution (binary runs, not just --version)
+  ✓ regenie --help executed
+  ✓ plink2 --help executed
+  ✓ Rscript executed inline R
+
+╭──────────────────────────────────────────────────────────────╮
+│  ✓ PASS   Spack + Lmod + Slurm chain healthy   37/37 checks  │
+╰──────────────────────────────────────────────────────────────╯
+
+  Finished       2026-06-01T15:01:32+00:00

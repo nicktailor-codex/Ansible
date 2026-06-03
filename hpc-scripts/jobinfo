@@ -1,0 +1,96 @@
+#!/bin/bash
+# jobinfo <jobid> — one-shot pretty summary of a Slurm job.
+# Wraps sacct + scontrol with the fields users actually want.
+
+set -euo pipefail
+
+if [[ $# -lt 1 ]]; then
+    echo "usage: jobinfo <jobid>"
+    echo "       jobinfo last     # last job submitted by \$USER"
+    exit 1
+fi
+
+JOBID="$1"
+if [[ "$JOBID" == "last" ]]; then
+    JOBID=$(sacct -u "$USER" -X -n --format=JobID 2>/dev/null | tr -d ' ' | tail -1)
+    [[ -z "$JOBID" ]] && { echo "no jobs found for $USER"; exit 1; }
+fi
+
+# colours
+if [[ -t 1 ]]; then
+    B=$'\033[1m'; D=$'\033[2m'; G=$'\033[32m'; R=$'\033[31m'
+    Y=$'\033[33m'; C=$'\033[36m'; X=$'\033[0m'
+else
+    B="" D="" G="" R="" Y="" C="" X=""
+fi
+
+field() { printf "  ${D}%-14s${X} %s\n" "$1" "$2"; }
+section() { printf "\n${B}${C}▸ %s${X}\n" "$1"; }
+
+# Grab the main row (whole job, not steps). -X = job summary only (no steps).
+# -P = pipe-delimited. IFS='|' preserves empty fields (-X jobs have no MaxRSS).
+# MaxRSS only exists on the .batch step, so fetch that separately below.
+IFS='|' read -r STATE EXITCODE NODELIST SUBMIT START END ELAPSED CPU_TIME REQMEM REQ_CPUS PART ACCT JOBNAME USER_ < <(
+    sacct -j "$JOBID" -X -P -n \
+        --format=State,ExitCode,NodeList,Submit,Start,End,Elapsed,CPUTime,ReqMem,ReqCPUS,Partition,Account,JobName,User \
+        2>/dev/null | head -1
+)
+
+# MaxRSS lives on the .batch step, not the parent job summary
+MAXRSS=$(sacct -j "${JOBID}.batch" -P -n --format=MaxRSS 2>/dev/null | head -1 | tr -d ' ')
+
+if [[ -z "${STATE:-}" ]]; then
+    echo "no record for job $JOBID — slurmctld may have purged it, or it never existed"
+    exit 1
+fi
+
+# State colouring
+case "$STATE" in
+    COMPLETED) STATE_C="${G}${STATE}${X}" ;;
+    FAILED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY) STATE_C="${R}${STATE}${X}" ;;
+    RUNNING|PENDING) STATE_C="${Y}${STATE}${X}" ;;
+    *) STATE_C="$STATE" ;;
+esac
+
+section "Job $JOBID  ($JOBNAME)"
+field "User"      "$USER_"
+field "Account"   "$ACCT"
+field "Partition" "$PART"
+field "Node"      "$NODELIST"
+field "State"     "$STATE_C  (exit ${EXITCODE})"
+
+section "Timing"
+field "Submit"    "$SUBMIT"
+field "Start"     "$START"
+field "End"       "$END"
+field "Elapsed"   "$ELAPSED"
+field "CPU time"  "$CPU_TIME"
+
+section "Resources"
+field "CPUs req"  "$REQ_CPUS"
+field "Mem req"   "$REQMEM"
+field "MaxRSS"    "${MAXRSS:-n/a}  ${D}(peak resident memory)${X}"
+
+# stdout/stderr — guess from common patterns
+section "Output files"
+OUT=$(scontrol show job "$JOBID" 2>/dev/null | grep -oE 'StdOut=\S+' | sed 's/StdOut=//' || true)
+ERR=$(scontrol show job "$JOBID" 2>/dev/null | grep -oE 'StdErr=\S+' | sed 's/StdErr=//' || true)
+if [[ -n "$OUT" ]]; then
+    field "stdout" "$OUT $( [[ -r $OUT ]] && echo "${D}(readable)${X}" || echo "${D}(not found)${X}" )"
+    [[ -n "$ERR" && "$ERR" != "$OUT" ]] && field "stderr" "$ERR"
+else
+    field "stdout" "${D}(scontrol no longer has it — job may be purged from running queue)${X}"
+fi
+
+# If failed, surface the reason
+if [[ "$STATE" =~ ^(FAILED|TIMEOUT|NODE_FAIL|OUT_OF_MEMORY)$ ]]; then
+    section "Failure detail"
+    REASON=$(scontrol show job "$JOBID" 2>/dev/null | grep -oE 'Reason=\S+' | sed 's/Reason=//' || true)
+    [[ -n "$REASON" && "$REASON" != "None" ]] && field "Reason" "$REASON"
+    if [[ -r "$OUT" ]]; then
+        echo "  ${D}--- last 15 lines of stdout ---${X}"
+        tail -15 "$OUT" | sed 's/^/    /'
+    fi
+fi
+
+echo

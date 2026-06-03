@@ -131,17 +131,140 @@ PHY-level health check via `nick_check.sh` (`ethtool -S` filtered on `phy|crc|sy
 - **Fleet final state:** all 4 nodes IDLE; gpu:l4:1 on cgpu01, gpu:h200_nvl:1 on gpu01/gpu02, cpu01 GPU-less. `/software` mounted on all 4.
 - **cpu01 reboot** deferred to ops (can't reboot the controller from its own session; no driver issue there anyway — just pending package/kernel updates).
 
+### 2026-05-31 — Ansible codification (everything ad-hoc is now a role)
+Everything done by hand-rolled scripts in `run-dir/` has been re-implemented as idempotent Ansible roles under `~/ansible-dev/`. Initial commit `54bc3e6` covers 8 roles; same-day follow-ups add `monitoring` and finish `slurm` accounting/secrets/install. Repo currently at 9 roles, all `changed=0` on re-run.
+
+- **`base`** — NOPASSWD sudoers drop-in, HPC sysctls (`vm.swappiness=10`, `net.core.somaxconn=4096`, `fs.file-max=2M`, etc.), policy-routing for NetApp (table 100 default, table 101 for `10.174.16.28/29`). Replaces the manual rules that kept getting lost on reboot.
+- **`storage`** — NetApp NFSv4.2 mounts (`/software`, `/mnt/compchem`, `/mnt/humgen`, `/mnt/humgen_protected`, `/mnt/informatics`) with `vers=4.2,proto=tcp,rsize=wsize=1M,hard,nconnect=16,noatime`. fstab-managed; survives reboot. NFS-and-ACL items closed.
+- **`nvidia`** — driver install path tag-gated `[install, never]` (3 conditional reboots); apt-mark hold + unattended-upgrades blacklist already in place. Deliberate upgrade path is unhold → apt upgrade → reboot → verify → re-hold.
+- **`slurm`** — full config codified. `slurm.conf` (5 partitions then; 6 now — see 2026-06-01), `cgroup.conf`, `gres.conf`, prolog (`20-enroot-scratch.sh`), `EnforcePartLimits=ALL`, accounting tree (`research` parent → `bioinformatics` / `compchem` / `human_genetics`; later renamed `informatics`), QoSes (`normal` 5d default, `debug` priority=500 60min). Vault-managed munge key + `slurmdbd.conf`. `daemons.yml` masks `slurmctld` on compute and resets failed state. Tasks split: `install.yml`, `config.yml`, `accounting.yml`, `secrets.yml`, `daemons.yml`, `prolog.yml`, `validate.yml`.
+- **`pyxis-enroot`** — Enroot 3.5.0 + Pyxis v0.20.0 built against Slurm 23.11.4 headers; SPANK plugin + `/etc/slurm/plugstack.conf`; shared `ENROOT_CACHE_PATH` on NetApp `/software/enroot-cache` (saves ~6.9 GB/node on burdentesting image); data/runtime/tmp stay local on `/scratch`.
+- **`networking`** — policy routing made persistent via systemd-networkd drop-ins. Closes the "rules lost on reboot" footgun.
+- **`mail`** — exim4 smarthost to EOP (`insmedinc.mail.protection.outlook.com:25`) with per-node sender (`cpu`/`cgpu`/`gpu01`/`gpu02` @ insmed.com). Slurm `MailProg=/etc/slurm/slurm-mail.sh` wraps bsd-mailx, qualifies bare `--mail-user=ntailor` with `@insmed.com`.
+- **`raid`** — verify + diagnostic repair only. Never runs `mdadm --create`. `--tags repair` is opt-in.
+- **`monitoring`** — `slurmrestd` + slurm-web (see below).
+- **Vault setup:** password at `~/.ansible-vault-pass` (mode 0600). Key `Xbv8EC+edQ84lh/0/Q+GsGyunTCp1s0k6AOfnsAx7S0=`. **No recovery if lost — back this up offsite.**
+
+### 2026-05-31 — Monitoring v1 (slurm-web v4 on Slurm 23.11)
+Spent a chunk of the day fighting slurm-web compatibility. Source-install attempted at v6.1.0 and v5.2.0 — both blew up on Slurm 24.x schema requirements and Python dep chains (RacksDB → pycairo → PyGObject ≥3.50 → girepository-2.0 not in Ubuntu). Pivoted to rackslab's apt repo (`pkgs.rackslab.io/deb ubuntu24.04`) once we realized they ship version-pinned `slurmweb-3/4/5/6` components.
+
+- **slurm-web v4 is the only component that talks Slurm 23.11's slurmrestd 0.0.39 cleanly.** v5/v6 expect 0.0.41+ (Slurm 24.x).
+- **/stats one-line bug:** v4 reads `meta["slurm"]` from the ping response; 0.0.39 returns `meta["Slurm"]` (capital S — renamed to lowercase in 0.0.41+). Ansible task patches `version()` in `/usr/lib/python3/dist-packages/slurmweb/slurmrestd/__init__.py` to fall back; idempotent, re-applies after apt upgrade.
+- **slurmrestd auth=local** required the agent to share the slurm user's UID — systemd drop-in runs `slurm-web-agent` as `slurm` (not `slurm-web`); slurm-web user added to the `slurm` group.
+- **policy.ini** grants anonymous role full read (auth is off for dev). To be tightened before user-facing rollout.
+- **Result:** all 7 endpoints (jobs / nodes / partitions / qos / accounts / reservations / stats) → HTTP 200 at `http://10.174.16.55:5011/`. UI renders real cluster data. Role idempotent.
+
+### 2026-06-01 — cpu-overflow partition + cluster-status CLI
+Realized the 192 CPU cores across gpu01/gpu02/cgpu01 were stranded — the `cpu` partition only saw cpu01, so CPU-only jobs never reached the GPU nodes' cores.
+
+- **New `cpu-overflow` partition** spans all 4 nodes (320 cores in scope). `MaxCPUsPerNode=48` reserves 16 cores/node for host-side cores alongside GPU jobs. `MaxTime=1d`, `PriorityTier=1` (lower than GPU partitions). Verified live: a job submitted to `cpu-overflow` lands on whichever node has free cores.
+- **GPU partitions bumped to `PriorityTier=5`** so a GPU job wins the scheduling race when both fit on the same node. No preemption (`PreemptMode=OFF`) — running jobs are never killed.
+- **`cluster-status` CLI helper** deployed to `/usr/local/bin/` on all 4 nodes. One-shot snapshot of free cores / mem / GPU per node + per-partition `a/i/o/t` view + queue depth. No slurm-web round-trip needed.
+
+### 2026-06-01 — Pyxis container memory floor dropped 8G → 3G (pre-existing config bug fixed)
+Started by attempting a burdentesting smoke audit; every `sbatch --container-image=` job died with `ExitCode 0:53, Elapsed 00:00:01` while `srun` with the same image worked. Initially blamed NFS bind-mounts and script-file mode — both wrong.
+
+- **Real cause: silent OOM during pyxis SquashFS build in stepd setup.** The OOM-kill happens before the user's command starts, so sacct's Elapsed timer shows 1s even though the kill happened minutes into the build. Made every failure look like an instant launch error.
+- **Discovered pre-existing config-name typo:** `roles/pyxis-enroot/files/enroot.conf` had `ENROOT_SQUASH_OPTS` but enroot's scripts read `ENROOT_SQUASH_OPTIONS` (full word). Our `-comp lzo -noI -noD -noF -noX` line had been a **no-op since day one** — enroot was falling back to its built-in default (gzip), the most memory-hungry option.
+- **Fix:** rename variable to `ENROOT_SQUASH_OPTIONS` and switch options to `-noI -noD -noF -noX -no-fragments` (uncompressed squashfs + skip fragment dedup).
+- **Results:**
+  - Memory floor: **8 GB → 3 GB safe minimum** (2 GB worked but with no headroom; MaxRSS peaks at ~2.08 GB during build)
+  - First-container-start time: ~60 s LZO build → ~20 s direct pack
+  - Tradeoff: per-user squashfs files ~3× larger (~2.3 GB for burdentesting vs gzip ~700 MB) — irrelevant given 7 TB local scratch
+- **Docs updated** in `Slurm-Cheatsheet.md` to reflect new floor.
+
+### 2026-06-01 — Spack + Lmod: native module system mirroring the burdentesting Docker stack
+Pyxis containers stay the right path for heavy reproducible workloads, but users wanted to swap individual tool versions (e.g. plink 1.9 vs 2.0, regenie 3.4 vs 3.5) without rebuilding the whole 2.3 GB Docker image. Built out Spack + Lmod as the lightweight complement: each tool installed natively, side-by-side versions selectable with `module load <tool>/<version>`.
+
+**Infrastructure (`spack-lmod` role):**
+- Lmod 8.6.19 (apt) on all 4 nodes; provides `module load/avail/list`
+- Spack v0.23.1 cloned to `/software/spack` (NetApp-shared → build once on cpu01, every node sees binaries + modules immediately via NFS)
+- Site-scoped `repos.yaml` registers our custom overlay so it survives Spack version bumps
+- `/etc/profile.d/spack.sh` on every node — wires `MODULEPATH` to Spack's module tree
+- `spack-build-burden` helper on cpu01 kicks off the multi-hour build in a detached tmux session (`tmux attach -t spack-build` to watch, Ctrl-b d to detach — survives SSH disconnects)
+
+**Burden environment (`/software/spack/var/spack/environments/burden/spack.yaml`):**
+Audited the burdentesting Docker image to get exact versions. Spack ↔ image alignment:
+
+| Tool | Image | Spack | How |
+|---|---|---|---|
+| regenie | 3.4.1 | 3.4.1 | Custom package in `insmed` overlay — installs the upstream static gz binary |
+| plink2 | 2.00a5.11 | 2.00a5.11 | Builtin, exact |
+| htslib | 1.20 | 1.20 | Builtin, exact |
+| r | 4.3.3 | 4.3.3 | Builtin, exact |
+| samtools | 1.20 | 1.20 | `insmed` overlay — backport (subclass of builtin) |
+| bcftools | 1.20 | 1.20 | `insmed` overlay — backport |
+| gcta | 1.94.4 | 1.94.1 | `insmed` overlay — image's 1.94.4 only published on Yang Lab CN host (blocked from cpu01); GitHub has up to 1.94.1 |
+| plink | 1.90b7.2 | 1.9-beta6.27 | Functionally identical (plink 1.9 has been perpetual-beta for ~10 years) |
+| python | 3.8.10 | 3.11.9 | 3.8 EOL'd from Spack; users running burdentesting via container still get 3.8 |
+
+129 packages total (10 root specs + transitive deps). Build wall-time ~2 hr on cpu01's 128 cores. Output cached on NetApp — repeat builds nearly instant.
+
+**Two real bugs hit + fixed during the build:**
+- **Backport subclasses don't inherit version-qualified `depends_on`.** Our initial samtools/bcftools 1.20 packages just added a `version()` line. Upstream binds htslib to bcftools via `depends_on("htslib", when="@1.19:1.19.X")` — our 1.20 fell outside the `when=` so concretization skipped htslib → `KeyError: 'No spec with name htslib'` at configure_args. Fix: explicit `depends_on("htslib@1.20", when="@1.20")` in the backport.
+- **Lmod module-name clashes** between duplicate transitive deps (two curl variants, two zstd variants concretized with different build options). Aborted the initial `spack module lmod refresh`. Fix: `hide_implicits: true` in modules.yaml so transitive deps stop competing for the same `curl/8.10.1.lua` filename. Users only see the 10 root tools in `module avail` anyway; deps still autoload behind the scenes via `autoload: direct`.
+
+**End-to-end Slurm validation (job 91):**
+- Submitted to `gpu01` (real compute node, not the controller)
+- `module load regenie plink2 bcftools r` worked
+- All 5 binaries resolved to `/software/spack/opt/spack/<pkg>-<hash>/bin/` via NetApp
+- 62 transitive dep modules autoloaded automatically
+- Versions confirmed: regenie 3.4.1, plink2 2.00a5.11 AVX2, bcftools 1.20, R 4.3.3
+- Total elapsed: 3 seconds
+
+**One real gotcha for users:** Slurm batch shells are non-login by default, so `/etc/profile.d/lmod.sh` isn't sourced → `module: command not found`. Fix: start the batch script with `#!/bin/bash -l` (login shell) or explicitly `source /etc/profile.d/lmod.sh`. Documented in [Spack-Lmod-Guide.md](Spack-Lmod-Guide.md) and added to Slurm-Cheatsheet.md gotchas.
+
+**Adding a new version is now ~5 minutes of admin time:**
+```bash
+sudo -i; source /software/spack/share/spack/setup-env.sh
+spack env activate burden
+# edit /software/spack/var/spack/environments/burden/spack.yaml — add line: - regenie@3.5.0
+spack concretize -f && spack install && spack module lmod refresh --delete-tree -y
+# users immediately see both regenie/3.4.1 and regenie/3.5.0 in module avail
+```
+
+**Docs written:** [Spack-Lmod-Guide.md](Spack-Lmod-Guide.md) — full user + admin guide with the sbatch template, module commands quick reference, troubleshooting, layer-cake of how `module load` resolves to the NetApp share.
+
 ## Open / next up
 
-- [ ] cpu01 reboot (ops — pending kernel/package updates; no driver mismatch)
-- [ ] Network team to inspect far-end SFPs / switch ports for cpu01 secondary, cgpu01 primary, cgpu01 secondary
-- [ ] Persist policy routing rules (so they survive reboot — netplan or systemd-networkd)
-- [ ] Once secondary links healthy: add `/etc/fstab` entries on all 4 nodes for NetApp mounts
-- [ ] Mirror gpu01's NFS mounts to gpu02 (also healthy)
-- [ ] Mount + content audit of `/humgen`, `/humgen_protected`, `/informatics`
-- [ ] AD/SSSD join across fleet (punch-list item, pre-existing)
-- [ ] `/etc/idmapd.conf` umich_ldap config (punch-list item)
-- [ ] Slurm config rewrite (partitions + QoS + AllowGroups) — held until David sign-off + AD group name from IT
+**External / waiting on others**
+- [ ] Network team — cpu01 secondary and cgpu01 both at ~3% CRC error rate; links work via TCP retransmits but throughput will suffer under bulk NFS load
+- [ ] cpu01 reboot (ops) — pending kernel/package updates
+- [ ] NetApp exports still pending: `/projects`, `/datasets`, `/home`, `/archive`
+- [ ] Team AD groups (`compchem`, `human_genetics`, `bioinformatics`) — pending IT
+- [ ] AD/SSSD complete; `/etc/idmapd.conf` umich_ldap config remaining
+
+**Ansible work**
+- [ ] `nvidia` install.yml real-world test on a fresh GPU node (only code-reviewed so far)
+- [ ] `slurm` install.yml fresh-node bootstrap — same (untested in anger)
+- [ ] Submit-time enforcement for explicit non-default QoS — Slurm 23.11 only rejects at job-start, not at submit. Needs a `job_submit/lua` script.
+- [ ] Sudoers NOPASSWD cleanup for ntailor (currently broad `apt` grant)
+
+**Monitoring → prod-ready** (deferred until rest of cluster is done)
+- [ ] Lock down slurm-web auth (LDAP or JWT — currently anonymous)
+- [ ] Apache reverse proxy + TLS cert in front of slurm-web
+- [ ] AD-integrated auth via Apache (mod_auth_kerb or Okta forward-auth)
+- [ ] Internal DNS entry for slurm-web (IT ticket)
+
+**Repo hygiene**
+- [ ] Push `ansible-dev/` to a remote (currently local-only)
+- [ ] Offsite backup of `~/.ansible-vault-pass` — no recovery if lost
+- [ ] CI hook so role changes are `--check`'d against the cluster before merge
+
+### 2026-06-02 — slurmctld auto-restart (workaround for assoc_mgr deadlock in 23.11.x)
+Hit a `fatal: assoc_mgr_lock: pthread_rwlock_rdlock(): Resource deadlock avoided` during a spack smoke test submit. Known race in Slurm 23.11.0–23.11.5 between the backfill scheduler and association cache updates — fixed upstream in 23.11.6+ and gone in 24.05+. We're on Ubuntu's 23.11.4.
+
+- **Manual recovery:** `sudo systemctl restart slurmctld` — slurmctld checkpoints state every ~30s, so restart recovers all in-flight jobs cleanly. Running jobs are **unaffected during the outage** — slurmd on each compute node manages them independently of slurmctld. Only new submissions / scheduling decisions / squeue / scancel block during the gap.
+- **Cheap insurance:** systemd drop-in at `/etc/systemd/system/slurmctld.service.d/restart.conf` (codified in `roles/slurm/files/slurmctld.service.d-restart.conf`, deployed by the `daemons` task):
+  ```
+  [Service]
+  Restart=on-failure
+  RestartSec=5s
+  StartLimitBurst=10
+  StartLimitIntervalSec=300s
+  ```
+  Tested by SIGKILL'ing slurmctld — back active in ~5 seconds, scheduler immediately responsive, all nodes IDLE. Real bug recurrence is now invisible: humans don't need to be in the loop.
+- **Real fix is the Slurm upgrade.** Tracked separately (24.05+ or 25.05+ via rackslab apt repo) — also unblocks slurm-web v5/v6 native support and slurmrestd JWT auth (drops the UID-match drop-in hack we did for slurm-web-agent).
 
 ## Notes / gotchas learned
 
@@ -153,4 +276,17 @@ PHY-level health check via `nick_check.sh` (`ethtool -S` filtered on `phy|crc|sy
 - **GPU detection needs `gres.conf`** — a `Gres=gpu:...` line in slurm.conf alone isn't enough. slurmd needs `/etc/slurm/gres.conf` with a device mapping (or `AutoDetect=nvml`) or it reports 0 GPUs and the node auto-drains, even when `nvidia-smi` works.
 - **Hold the NVIDIA driver** (`apt-mark hold`) on GPU nodes. An unattended `apt upgrade` bumps the userspace libs but not the loaded kernel module → "Driver/library version mismatch" until reboot. Holding makes driver updates a deliberate, planned action.
 - **`scontrol reconfigure` re-validates gres** — it forces slurmd to re-check GPU detection, which can surface latent gres.conf problems that were masked since the last slurmd start. Not a bug, just a thing to know: a config push can expose a pre-existing GPU issue.
+- **slurmrestd `auth=local` uses Unix-socket peercred** — the connecting process must share UID with the slurm user, or it 401s. Vendor .deb runs `slurm-web-agent` as `slurm-web`; a systemd drop-in switches it to `slurm`. Avoid if `auth=jwt` is available (Slurm 25.05+).
+- **slurm-web ↔ slurmrestd schema versions matter.** v6/v5 expect Slurm 24.x's `0.0.41+`; on 23.11 (`0.0.39`) only `slurmweb-4` works, and even that needs a one-line patch for the `meta.slurm` → `meta.Slurm` capitalization change. Pin the rackslab component and the `version=` line in `agent.ini` together.
+- **`MaxCPUsPerNode` caps a partition's total allocation per node**, not per-job. Useful for reserving cores on shared nodes (e.g. cpu-overflow capped at 48/64 leaves 16 for GPU-job host cores).
+- **`PriorityTier` ≠ preemption.** It only changes scheduling order when resources free up. Running jobs are never killed unless `PreemptMode` is set. We deliberately leave preemption off.
+- **`sinfo -N` emits one row per (node, partition) pair** — a node in 3 partitions shows up 3 times. Dedupe with `awk '!seen[$1]++'` or use `sinfo -e` for the unique view.
+- **Enroot config variable is `ENROOT_SQUASH_OPTIONS` (full word), not `ENROOT_SQUASH_OPTS`.** Typos in `/etc/enroot/enroot.conf` silently fail — the variable just isn't read and enroot uses defaults. Verify any new enroot config line by grepping the enroot scripts for the exact variable name.
+- **Pyxis SquashFS build is the memory-hungry step**, not the user's command. OOM there shows as `ExitCode 0:53, Elapsed 00:00:01` in sacct because the kill happens in stepd setup before the elapsed timer starts. With uncompressed squashfs (`-noI -noD -noF -noX -no-fragments`) the floor is ~2-3 GB; with gzip default it's ~8 GB.
+- **Spack package subclasses don't inherit version-qualified `depends_on`.** Adding a new `version()` line to a backport class isn't enough — if the parent declares `depends_on("htslib", when="@1.19:1.19.X")`, the new version falls outside the `when=` clause and concretization skips the dep. Always re-declare deps explicitly in the subclass with a `when=` matching the new version.
+- **Spack v1.x (Jan 2025+) split the builtin package repo into a separate Python package.** v0.23.1 is the last release where `var/spack/repos/builtin/packages/` lives inside the spack git tree. Bumping past v0.23.x requires installing `spack-packages` separately. Pin to v0.23.1 unless you want that migration.
+- **Lmod `hide_implicits: true` prevents module-name clashes** between duplicate transitive deps (Spack often concretizes two variants of curl/zstd/openssl with different build options). Hidden deps still autoload from `module load <user-facing-tool>` so behavior is unchanged.
+- **Slurm batch scripts using `module` need `#!/bin/bash -l`.** Slurm runs batch shells non-login by default, so `/etc/profile.d/lmod.sh` doesn't auto-source and `module: command not found`. The `-l` flag is the cleanest fix.
+- **slurmctld auto-restart hides the assoc_mgr deadlock.** `Restart=on-failure` + `RestartSec=5s` systemd drop-in means a dead controller is back in ~5s with no human action. State is checkpointed every 30s so jobs survive cleanly. Running jobs are unaffected during the gap — only new submits/scheduling/squeue/scancel briefly block.
+- **Slurm scheduler crashes don't kill running jobs.** slurmd on each compute node manages its allocated jobs independently of slurmctld. Job processes keep running, stdout keeps writing, cgroup limits stay enforced; only the scheduler-side metadata is paused until slurmctld comes back.
 
