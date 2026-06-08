@@ -4,11 +4,11 @@
 [service]
 cluster={{ slurm_cluster_name }}
 interface=127.0.0.1
-port={{ monitoring_agent_port }}
+port={{ slurm_ui_agent_port }}
 cors=yes
 
 [slurmrestd]
-uri=unix:{{ monitoring_slurmrestd_socket }}
+uri=unix:{{ slurm_ui_slurmrestd_socket }}
 # auth=local works because Slurm 23.11 supports it and the agent runs
 # as the slurm-web user (in the slurm group), so it can read the
 # slurmrestd socket. Switch to auth=jwt when we bump Slurm to 25.05+.

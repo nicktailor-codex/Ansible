@@ -1,0 +1,43 @@
+# cuda-stack.yaml — Spack environment for CUDA toolkits, exposed via Lmod.
+#
+# CUDA is downloaded as NVIDIA's prebuilt installer (.run file), not built
+# from source — each version takes ~5 GB on disk and ~15-20 min to
+# fetch + extract. Safe to run during normal admin hours; not "hours" like
+# the burden stack.
+#
+# Admin install (on cpu01, as root — see role README "Always sudo"):
+#   sudo /software/spack/bin/spack env activate cuda
+#   sudo /software/spack/bin/spack install
+#   sudo /software/spack/bin/spack module lmod refresh -y
+#
+# Users then:
+#   module avail cuda                       # lists 12.4.1, 12.6.2, ...
+#   module load cuda/12.4.1
+#   nvcc --version
+#
+# Driver compatibility on this cluster: host driver is 580.x, which
+# supports CUDA 11.x / 12.x / 13.x — anything in this env works.
+#
+# Adding a new version: append `- cuda@<version>` to the specs list,
+# re-run the install + refresh. Side-by-side coexists cleanly.
+
+spack:
+  view: false                # No global view symlinks — modules only.
+  concretizer:
+    unify: false             # Allow side-by-side versions.
+
+  modules:
+    default:
+      enable: [lmod]
+      lmod:
+        hash_length: 0       # Cleaner module names (no hash suffix).
+        core_compilers: [gcc@13.3.0]
+        all:
+          autoload: direct   # Modules auto-pull dependency modules.
+
+  specs:
+    # Common ML-stack target — PyTorch 2.4/2.5 stable, many NGC tags.
+    - cuda@12.4.1
+
+    # Latest in 12.x family — Spack v0.23.1's "Preferred version".
+    - cuda@12.6.2

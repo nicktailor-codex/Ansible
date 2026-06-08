@@ -1,7 +1,0 @@
----
-# monitoring.yml — slurm-web dev install on the controller.
-- name: Apply monitoring role (controller only)
-  hosts: controllers
-  gather_facts: yes
-  roles:
-    - monitoring

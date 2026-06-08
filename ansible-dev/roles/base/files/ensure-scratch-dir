@@ -1,0 +1,18 @@
+#!/bin/sh
+# ensure-scratch-dir — create /scratch/$PAM_USER on login.
+#
+# Mirrors what pam_mkhomedir does for /home, but for the local NVMe
+# scratch space. Called via pam_exec from /etc/pam.d/common-session
+# (see /usr/share/pam-configs/scratchdir). Slurm jobs get this via
+# the prolog (20-enroot-scratch.sh); this script covers interactive
+# (ssh / shell) login sessions.
+#
+# PAM_USER is set by libpam — bail safely if unset.
+set -eu
+: "${PAM_USER:?PAM_USER not set}"
+
+SCRATCH="/scratch/${PAM_USER}"
+if [ ! -d "$SCRATCH" ]; then
+    install -d -m 0700 -o "$PAM_USER" "$SCRATCH"
+fi
+exit 0

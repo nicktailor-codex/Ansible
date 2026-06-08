@@ -1,0 +1,9 @@
+---
+# slurm-ui.yml — Slurm web UIs on the controller: slurm-web v4 (live queue
+# view) + sacctweb (job-history view). NOT general monitoring (no
+# Prometheus/Grafana/node_exporter); strictly Slurm-facing UIs.
+- name: Apply slurm-ui role (controller only)
+  hosts: controllers
+  gather_facts: yes
+  roles:
+    - slurm-ui

@@ -1,5 +1,5 @@
 ---
-# monitoring role v2 — slurm-web via rackslab's official Ubuntu 24.04
+# slurm-ui role v2 — slurm-web via rackslab's official Ubuntu 24.04
 # apt repo. Packages are version-pinned by repo component:
 #   slurmweb-3, slurmweb-4, slurmweb-5, slurmweb-6
 #
@@ -11,22 +11,22 @@
 # (and drop the version= override in agent.ini.j2) when Slurm goes
 # to 24.05+.
 
-monitoring_rackslab_keyring: /usr/share/keyrings/rackslab-archive-keyring.gpg
-monitoring_rackslab_key_url: https://pkgs.rackslab.io/keyring.asc
-monitoring_rackslab_repo_url: https://pkgs.rackslab.io/deb
-monitoring_rackslab_release: ubuntu24.04
-monitoring_rackslab_components: "main slurmweb-4"
+slurm_ui_rackslab_keyring: /usr/share/keyrings/rackslab-archive-keyring.gpg
+slurm_ui_rackslab_key_url: https://pkgs.rackslab.io/keyring.asc
+slurm_ui_rackslab_repo_url: https://pkgs.rackslab.io/deb
+slurm_ui_rackslab_release: ubuntu24.04
+slurm_ui_rackslab_components: "main slurmweb-4"
 
 # Controller-only system packages
-monitoring_packages:
+slurm_ui_packages:
   - slurmrestd            # Slurm REST API daemon (Ubuntu repo)
   - slurm-web-agent       # rackslab — backend
   - slurm-web-gateway     # rackslab — UI + reverse proxy
 
 # slurm-web listen addresses
-monitoring_agent_port: 5012
-monitoring_gateway_port: 5011
-monitoring_gateway_interface: 0.0.0.0     # cluster-network accessible
+slurm_ui_agent_port: 5012
+slurm_ui_gateway_port: 5011
+slurm_ui_gateway_interface: 0.0.0.0     # cluster-network accessible
 
 # slurmrestd Unix socket (slurmrestd.service creates the runtime dir)
-monitoring_slurmrestd_socket: /run/slurmrestd/slurmrestd.socket
+slurm_ui_slurmrestd_socket: /run/slurmrestd/slurmrestd.socket

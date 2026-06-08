@@ -1,0 +1,6 @@
+Name: Auto-create per-user /scratch directory
+Default: yes
+Priority: 900
+Session-Type: Additional
+Session:
+	optional	pam_exec.so	seteuid	/usr/local/sbin/ensure-scratch-dir

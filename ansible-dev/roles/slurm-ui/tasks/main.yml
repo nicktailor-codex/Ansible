@@ -1,28 +1,28 @@
 ---
-# monitoring role — slurm-web via rackslab's apt repo.
+# slurm-ui role — slurm-web via rackslab's apt repo.
 # Runs on cpu01 (controller) only. Compute nodes need nothing.
 
 - name: Download rackslab signing key (ASCII-armored)
   ansible.builtin.get_url:
-    url: "{{ monitoring_rackslab_key_url }}"
+    url: "{{ slurm_ui_rackslab_key_url }}"
     dest: /tmp/rackslab-keyring.asc
     mode: "0644"
   when: inventory_hostname == slurm_controller
 
 - name: Dearmor rackslab key into apt keyring (binary .gpg)
   ansible.builtin.shell:
-    cmd: gpg --dearmor < /tmp/rackslab-keyring.asc > {{ monitoring_rackslab_keyring }}
-    creates: "{{ monitoring_rackslab_keyring }}"
+    cmd: gpg --dearmor < /tmp/rackslab-keyring.asc > {{ slurm_ui_rackslab_keyring }}
+    creates: "{{ slurm_ui_rackslab_keyring }}"
   when: inventory_hostname == slurm_controller
 
 - name: rackslab apt source list
   ansible.builtin.copy:
-    content: "deb [signed-by={{ monitoring_rackslab_keyring }}] {{ monitoring_rackslab_repo_url }} {{ monitoring_rackslab_release }} {{ monitoring_rackslab_components }}\n"
+    content: "deb [signed-by={{ slurm_ui_rackslab_keyring }}] {{ slurm_ui_rackslab_repo_url }} {{ slurm_ui_rackslab_release }} {{ slurm_ui_rackslab_components }}\n"
     dest: /etc/apt/sources.list.d/rackslab.list
     owner: root
     group: root
     mode: "0644"
-  register: monitoring_rackslab_list
+  register: slurm_ui_rackslab_list
   when: inventory_hostname == slurm_controller
 
 - name: apt cache refresh after adding rackslab repo
@@ -33,7 +33,7 @@
 
 - name: Install slurmrestd + slurm-web
   ansible.builtin.apt:
-    name: "{{ monitoring_packages }}"
+    name: "{{ slurm_ui_packages }}"
     state: present
   when: inventory_hostname == slurm_controller
 
@@ -156,7 +156,7 @@
     regexp: '    def version\(self, \*\*kwargs\):\n        return self\._request\(f"/slurm/v\{self\.api_version\}/ping", "meta", \*\*kwargs\)\[\n            "slurm"\n        \]'
     replace: |2-
           def version(self, **kwargs):
-              # ANSIBLE-PATCH (monitoring role): 0.0.39 returns meta.Slurm
+              # ANSIBLE-PATCH (slurm-ui role): 0.0.39 returns meta.Slurm
               # (capital S). 0.0.41+ uses lowercase. Fall back so we work on both.
               _meta = self._request(f"/slurm/v{self.api_version}/ping", "meta", **kwargs)
               return _meta.get("slurm") or _meta["Slurm"]
@@ -180,7 +180,7 @@
     mode: "0755"
   when: inventory_hostname == slurm_controller
   register: history_patch_script
-  tags: [monitoring, history]
+  tags: [slurm-ui, history]
 
 - name: Apply the history patch (idempotent — sentinel check inside)
   ansible.builtin.command:
@@ -189,7 +189,7 @@
   changed_when: "'patched:' in history_patch_apply.stdout and 'already' not in history_patch_apply.stdout"
   when: inventory_hostname == slurm_controller
   notify: restart slurm-web-agent
-  tags: [monitoring, history]
+  tags: [slurm-ui, history]
 
 - ansible.builtin.meta: flush_handlers
 
@@ -218,7 +218,7 @@
 # ── Pin slurm-web to v4 — apt-mark hold + unattended-upgrades blacklist ──
 # Same two-layer pattern as the nvidia driver. We're locked to slurmweb-4
 # because v5/v6 require Slurm 24.x. An auto-upgrade would silently break
-# the cluster's monitoring and revert any vendor-code patches we apply
+# the Slurm UIs and revert any vendor-code patches we apply
 # (e.g. the meta.Slurm fix above). Hold prevents both.
 #
 # Deliberate upgrade path (post-Slurm-bump):
@@ -233,7 +233,7 @@
     - slurm-web-agent
     - slurm-web-gateway
   when: inventory_hostname == slurm_controller
-  tags: [monitoring, apt-hold]
+  tags: [slurm-ui, apt-hold]
 
 - name: Blacklist slurm-web from unattended-upgrades
   ansible.builtin.copy:
@@ -243,42 +243,37 @@
     mode: "0644"
     content: |
       // Pin slurm-web to v4. v5/v6 require Slurm 24.x; until the cluster-wide
-      // Slurm upgrade lands, an auto-upgrade would break monitoring and
+      // Slurm upgrade lands, an auto-upgrade would break the Slurm UIs and
       // revert our vendor-code patches (see meta.Slurm fix in slurm-web role).
       // Deliberate update: `apt-mark unhold slurm-web-agent slurm-web-gateway`
-      // then re-apply the monitoring role.
+      // then re-apply the slurm-ui role.
       Unattended-Upgrade::Package-Blacklist {
           "slurm-web-";
       };
   when: inventory_hostname == slurm_controller
-  tags: [monitoring, apt-hold]
+  tags: [slurm-ui, apt-hold]
 
 # ── sacctweb ───────────────────────────────────────────────────────────
 # Small Flask app at port 5013 that wraps sacct with search/filter/pagination —
 # fills the gap left by slurm-web v4's lack of a history view. Runs as the
 # slurm user (no root needed; sacct reads accounting via slurmdbd).
 # cpu01-only since slurmdbd lives there.
+#
+# Deploys to /usr/local/bin/sacctweb — matches cluster convention for
+# custom admin tools (cluster-status, jobinfo, slurm-allow all live there).
+# Pre-rename location was /opt/sacctweb/sacctweb.py; cleanup task below
+# removes the stale tree.
 
-- name: sacctweb runtime dir
-  ansible.builtin.file:
-    path: /opt/sacctweb
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  when: inventory_hostname == slurm_controller
-  tags: [monitoring, sacctweb]
-
-- name: sacctweb python app
+- name: sacctweb deploy (single-file Flask app)
   ansible.builtin.copy:
-    src: sacctweb.py
-    dest: /opt/sacctweb/sacctweb.py
+    src: sacctweb
+    dest: /usr/local/bin/sacctweb
     owner: root
     group: root
     mode: "0755"
   when: inventory_hostname == slurm_controller
   notify: restart sacctweb
-  tags: [monitoring, sacctweb]
+  tags: [slurm-ui, sacctweb]
 
 - name: sacctweb systemd unit
   ansible.builtin.copy:
@@ -289,7 +284,8 @@
     mode: "0644"
   when: inventory_hostname == slurm_controller
   register: sacctweb_unit
-  tags: [monitoring, sacctweb]
+  notify: restart sacctweb
+  tags: [slurm-ui, sacctweb]
 
 - name: sacctweb service active + enabled
   ansible.builtin.systemd:
@@ -298,4 +294,13 @@
     enabled: yes
     daemon_reload: "{{ sacctweb_unit.changed | default(false) }}"
   when: inventory_hostname == slurm_controller
-  tags: [monitoring, sacctweb]
+  tags: [slurm-ui, sacctweb]
+
+# Clean up pre-rename /opt/sacctweb tree. Safe to remove unconditionally:
+# the new deploy + unit point at /usr/local/bin/sacctweb.
+- name: Remove pre-rename /opt/sacctweb tree
+  ansible.builtin.file:
+    path: /opt/sacctweb
+    state: absent
+  when: inventory_hostname == slurm_controller
+  tags: [slurm-ui, sacctweb]

@@ -61,6 +61,25 @@
   notify: clear nfsidmap cache
   tags: [storage, idmapd]
 
+# ── Local /scratch baseline ─────────────────────────────────────────
+# /scratch is the per-node local NVMe stripe (RAID-0 set up by the
+# `raid` role; the FS itself is XFS). We enforce 0755 at the mount root
+# to match /home's permission model. Per-user subdirs (/scratch/$USER)
+# are created automatically on demand:
+#   - On interactive login → PAM session hook in base role
+#     (/usr/local/sbin/ensure-scratch-dir, called via pam_exec)
+#   - On job allocation    → Slurm prolog (20-enroot-scratch.sh)
+# Both paths set /scratch/$USER to 0700 owned by the user — identical
+# privacy/ownership semantics as /home/$USER.
+- name: Local /scratch root has 0755 (matches /home model)
+  ansible.builtin.file:
+    path: /scratch
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [storage, scratch]
+
 # /scratch/cluster-software was the pre-NetApp bootstrap area for enroot
 # cache + container catalog. Replaced by /software/containers/ (NetApp,
 # managed elsewhere) and per-user /scratch/$USER/enroot/ (Slurm prolog

@@ -4,7 +4,7 @@
 Wraps `sacct --parsable2` so users get a searchable, filterable, paginated
 job-history view that slurm-web v4 doesn't provide. Read-only.
 
-Run:    python3 sacctweb.py
+Run:    sudo systemctl restart sacctweb (deploy via Ansible)
 Browse: http://<host>:5012/
 """
 from flask import Flask, request, render_template_string

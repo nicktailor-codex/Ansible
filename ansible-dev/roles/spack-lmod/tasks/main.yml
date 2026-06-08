@@ -147,6 +147,30 @@
   when: inventory_hostname == slurm_controller
   tags: [spack-lmod, spack]
 
+# ── 5b. Spack 'cuda' environment — NVIDIA CUDA toolkits ───────────────
+# CUDA is fetched as NVIDIA's prebuilt installer (not source-built), so the
+# install is ~20 min per version rather than hours. We still keep it in
+# the role declaratively so a fresh-install reproduces the module catalogue.
+- name: Spack 'cuda' environment directory
+  ansible.builtin.file:
+    path: "{{ spack_root }}/var/spack/environments/cuda"
+    state: directory
+    owner: root
+    group: staff
+    mode: "0775"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack, cuda]
+
+- name: Drop pinned cuda-stack spack.yaml
+  ansible.builtin.copy:
+    src: cuda-stack.yaml
+    dest: "{{ spack_root }}/var/spack/environments/cuda/spack.yaml"
+    owner: root
+    group: staff
+    mode: "0664"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack, cuda]
+
 # ── 6. /etc/profile.d/spack.sh on every node ──────────────────────────
 - name: Drop /etc/profile.d/spack.sh on every node
   ansible.builtin.copy:
