@@ -1,0 +1,159 @@
+---
+# nvidia install — fresh-node bootstrap path.
+# Codifies run-dir/nvidiainstall.sh as Ansible.
+#
+# ⚠️ Heavy: includes up to THREE reboots (kernel update, nouveau unload,
+# driver load). Each reboot is conditional on the preceding task
+# actually changing state — re-running this on an already-provisioned
+# node is a no-op (no reboots).
+#
+# Phases:
+#   1. apt update + upgrade — bump kernel
+#      (reboot if kernel was upgraded)
+#   2. Build prereqs (dkms, headers) + nouveau blacklist
+#      (reboot to unload nouveau, only if blacklist changed)
+#   3. CUDA repo + driver install
+#      (reboot to load new driver, only if driver installed)
+#   4. CUDA toolkit + /etc/profile.d/cuda.sh
+#   5. NVIDIA Container Toolkit (Pyxis/Enroot dependency)
+#
+# Subsequent default-run tasks (lockdown.yml + validate.yml) lock in
+# the state — apt-mark hold + blacklist + driver-version assertion.
+
+# ── Phase 1: apt update + upgrade ───────────────────────────
+- name: apt cache refresh
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 0
+
+- name: System upgrade (may pull a new kernel)
+  ansible.builtin.apt:
+    upgrade: dist
+    autoremove: yes
+  register: nvidia_install_apt_upgrade
+
+- name: Reboot if a kernel update was applied
+  ansible.builtin.reboot:
+    msg: "nvidia install — booting into upgraded kernel"
+    reboot_timeout: 600
+  when: nvidia_install_apt_upgrade.changed
+
+# ── Phase 2: prereqs + nouveau blacklist ────────────────────
+- name: Install DKMS build prereqs
+  ansible.builtin.apt:
+    name: "{{ nvidia_install_prereqs + ['linux-headers-' + ansible_kernel] }}"
+    state: present
+
+- name: Drop nouveau blacklist
+  ansible.builtin.copy:
+    src: blacklist-nouveau.conf
+    dest: /etc/modprobe.d/blacklist-nouveau.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: nvidia_install_nouveau_blacklist
+  notify: update initramfs
+
+- name: Apply update-initramfs handler now (before reboot)
+  ansible.builtin.meta: flush_handlers
+
+- name: Reboot to fully unload nouveau (only if blacklist changed)
+  ansible.builtin.reboot:
+    msg: "nvidia install — unloading nouveau"
+    reboot_timeout: 600
+  when: nvidia_install_nouveau_blacklist.changed
+
+- name: Verify nouveau is no longer loaded
+  ansible.builtin.shell:
+    cmd: lsmod | grep -c nouveau || true
+  register: nvidia_install_nouveau_check
+  changed_when: false
+  failed_when: nvidia_install_nouveau_check.stdout | int > 0
+
+# ── Phase 3: CUDA repo + driver install ─────────────────────
+# Download keyring deb each time (cheap, idempotent dpkg -i).
+- name: Download NVIDIA CUDA apt keyring
+  ansible.builtin.get_url:
+    url: "{{ nvidia_install_cuda_keyring_url }}"
+    dest: /tmp/cuda-keyring.deb
+    mode: "0644"
+  register: nvidia_install_cuda_keyring
+
+- name: Install CUDA apt keyring (adds the repo + signing key)
+  ansible.builtin.apt:
+    deb: /tmp/cuda-keyring.deb
+  register: nvidia_install_cuda_keyring_apt
+
+- name: apt cache refresh after CUDA repo
+  ansible.builtin.apt:
+    update_cache: yes
+  when: nvidia_install_cuda_keyring_apt.changed
+
+- name: Install NVIDIA driver
+  ansible.builtin.apt:
+    name: "{{ nvidia_install_driver_pkg }}"
+    state: present
+  register: nvidia_install_driver
+
+- name: Reboot to load new NVIDIA driver (only if driver installed)
+  ansible.builtin.reboot:
+    msg: "nvidia install — loading new driver"
+    reboot_timeout: 600
+  when: nvidia_install_driver.changed
+
+- name: Verify driver loaded — nvidia-smi works
+  ansible.builtin.command:
+    cmd: nvidia-smi --query-gpu=driver_version --format=csv,noheader
+  register: nvidia_install_smi
+  changed_when: false
+  check_mode: false
+  failed_when: nvidia_install_smi.rc != 0
+
+# ── Phase 4: CUDA toolkit + PATH wrapper ────────────────────
+- name: Install CUDA toolkit
+  ansible.builtin.apt:
+    name: "{{ nvidia_install_cuda_toolkit_pkg }}"
+    state: present
+
+- name: Drop /etc/profile.d/cuda.sh (PATH / LD_LIBRARY_PATH / CUDA_HOME)
+  ansible.builtin.copy:
+    src: cuda.sh
+    dest: /etc/profile.d/cuda.sh
+    owner: root
+    group: root
+    mode: "0644"
+
+# ── Phase 5: NVIDIA Container Toolkit (Pyxis/Enroot dependency) ──
+- name: Download NVIDIA Container Toolkit keyring (gpg)
+  ansible.builtin.get_url:
+    url: "{{ nvidia_install_nct_keyring_url }}"
+    dest: /tmp/nvidia-container-toolkit.gpg.key
+    mode: "0644"
+
+- name: Install NCT keyring at /usr/share/keyrings/
+  ansible.builtin.shell:
+    cmd: gpg --dearmor < /tmp/nvidia-container-toolkit.gpg.key > /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+    creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+
+- name: Fetch NCT apt sources list
+  ansible.builtin.get_url:
+    url: "{{ nvidia_install_nct_repo_list_url }}"
+    dest: /tmp/nvidia-container-toolkit.list.raw
+    mode: "0644"
+
+- name: Rewrite NCT sources to use the dearmored keyring
+  ansible.builtin.shell:
+    cmd: |
+      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+        /tmp/nvidia-container-toolkit.list.raw \
+        > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+- name: apt cache refresh after NCT repo
+  ansible.builtin.apt:
+    update_cache: yes
+
+- name: Install nvidia-container-toolkit
+  ansible.builtin.apt:
+    name: nvidia-container-toolkit
+    state: present

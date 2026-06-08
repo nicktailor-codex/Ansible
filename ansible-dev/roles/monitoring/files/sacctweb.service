@@ -1,0 +1,26 @@
+[Unit]
+Description=sacctweb — web UI for sacct (job history with search/filter)
+Documentation=file:///home/ntailor/ansible-dev/roles/monitoring/files/sacctweb.py
+After=network.target slurmdbd.service
+Wants=slurmdbd.service
+
+[Service]
+Type=simple
+# Runs as slurm user — sacct reads accounting via slurmdbd; no need for root.
+User=slurm
+Group=slurm
+WorkingDirectory=/opt/sacctweb
+ExecStart=/usr/bin/python3 /opt/sacctweb/sacctweb.py
+Restart=on-failure
+RestartSec=10
+# Minimal hardening — read-only filesystem except /tmp (Flask scratch)
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes
+# stdout/stderr → journal
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

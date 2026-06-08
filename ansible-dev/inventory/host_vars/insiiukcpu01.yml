@@ -1,0 +1,9 @@
+---
+# Per-host networking. Primary NIC carries default traffic; secondary
+# NIC routes NetApp traffic (policy-based, table 101) for I/O isolation.
+network_primary_ip: 10.174.16.55
+network_secondary_ip: 10.174.16.60
+
+# Email sender identifier — becomes the local-part of the From: address
+# on outbound mail from this node. Domain set in group_vars/all.yml.
+mail_sender_node: cpu

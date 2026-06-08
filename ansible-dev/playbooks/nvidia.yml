@@ -1,0 +1,18 @@
+---
+# nvidia.yml — apply the nvidia role to GPU nodes only.
+# (cpu01 has no GPU; nvidia stack is not installed there.)
+#
+# Dry-run first:
+#   ansible-playbook playbooks/nvidia.yml --check --diff
+# Then for real:
+#   ansible-playbook playbooks/nvidia.yml
+#
+# Targeted runs:
+#   --tags lockdown        # hold + blacklist only
+#   --tags validate        # driver version assert only
+
+- name: Apply nvidia role to GPU nodes
+  hosts: gpu_nodes
+  gather_facts: yes
+  roles:
+    - nvidia

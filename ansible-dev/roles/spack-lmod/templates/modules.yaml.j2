@@ -1,0 +1,33 @@
+# {{ ansible_managed }}
+# Site-wide Lmod module generation config — applies to any Spack env
+# that doesn't override modules: in its own spack.yaml.
+
+modules:
+  default:
+    roots:
+      lmod: {{ spack_modules_root }}
+    enable: [lmod]
+    lmod:
+      # Flat layout — `module avail` shows `regenie/3.4.1` not `Core/regenie/3.4.1`.
+      hash_length: 0
+      core_compilers: [gcc@13.3.0]
+      hierarchy: []
+      # Hide transitive build-deps (curl, zstd, openssl, etc.) from `module
+      # avail`. They still exist on disk so autoload can pull them when a
+      # user-facing module loads, but two flavours of curl (one with libidn2,
+      # one without) won't clash on the same `curl/8.10.1.lua` filename.
+      hide_implicits: true
+      all:
+        # Loading a module brings its dependency modules with it automatically.
+        autoload: direct
+        # Don't expose internal toolchain modules to users by default.
+        environment:
+          set:
+            '{name}_ROOT': '{prefix}'
+      # Hide the very low-level packages from `module avail` — keeps the list
+      # focused on user-facing tools. Users can still load them explicitly.
+      exclude:
+        - 'gcc-runtime'
+        - 'glibc'
+        - 'libiconv'
+        - 'pkgconf'

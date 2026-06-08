@@ -1,0 +1,4 @@
+---
+network_primary_ip: 10.174.16.56
+network_secondary_ip: 10.174.16.61
+mail_sender_node: cgpu

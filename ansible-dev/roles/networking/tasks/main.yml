@@ -1,0 +1,19 @@
+---
+# networking role — entry point.
+# v1 scope: codify the netplan config so it's reproducible. Per-host IPs
+# come from inventory/host_vars; everything else is constant in the
+# template. Pushing the template triggers `netplan generate` (validate)
+# then `netplan apply` (activate).
+#
+# Future v2 candidates: chrony with Insmed NTP sources, sysctl tuning
+# for HPC (TCP buffers, file handles), firewall rules when cgpu01
+# inference APIs go live, MTU bump to 9000 if switch/NetApp agree.
+
+- name: netplan config canonical (per-host template)
+  ansible.builtin.template:
+    src: 50-cloud-init.yaml.j2
+    dest: "{{ networking_netplan_path }}"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: netplan apply

@@ -1,0 +1,66 @@
+---
+# nvidia role defaults
+#
+# Codifies the current state of GPU nodes (driver 580.159.03 + CUDA 12.6
+# stack), locked down against unattended-upgrades so the kernel module
+# and userspace libs stay in lockstep. Install path (tasks/install.yml)
+# folds in the steps from run-dir/nvidiainstall.sh; gated by --tags install.
+
+# Expected driver version — validate.yml asserts this matches nvidia-smi.
+# Bump deliberately during an unhold → upgrade → reboot → re-hold cycle.
+nvidia_expected_driver_version: "580.159.03"
+
+# All packages that must stay at the current version. Pinning via
+# `apt-mark hold` + the unattended-upgrades blacklist. The "-580-server"
+# suffixed packages are the headless server driver build (no Wayland/X11).
+nvidia_held_packages:
+  - libnvidia-cfg1-580-server
+  - libnvidia-common-580-server
+  - libnvidia-compute-580-server
+  - libnvidia-container-tools
+  - libnvidia-container1
+  - libnvidia-decode-580-server
+  - libnvidia-egl-wayland1
+  - libnvidia-encode-580-server
+  - libnvidia-extra-580-server
+  - libnvidia-fbc1-580-server
+  - libnvidia-gl-580-server
+  - nvidia-compute-utils-580-server
+  - nvidia-container-toolkit
+  - nvidia-container-toolkit-base
+  - nvidia-dkms-580-server
+  - nvidia-driver-580-server
+  - nvidia-firmware-580-server-580.159.03
+  - nvidia-kernel-common-580-server
+  - nvidia-kernel-source-580-server
+  - nvidia-utils-580-server
+  - xserver-xorg-video-nvidia-580-server
+
+# Unattended-upgrades blacklist file path
+nvidia_blacklist_path: /etc/apt/apt.conf.d/51-nvidia-blacklist
+
+# ── tasks/install.yml — fresh-node bootstrap (--tags install only) ──
+
+# Driver package family; matches what `apt-mark hold` later pins.
+nvidia_install_driver_pkg: nvidia-driver-580-server
+
+# CUDA toolkit package and matching cuda.sh wrapper in /etc/profile.d.
+nvidia_install_cuda_toolkit_pkg: cuda-toolkit-12-6
+
+# Build prereqs for DKMS + headers. linux-headers-{{ ansible_kernel }}
+# is resolved at task-time via gather_facts.
+nvidia_install_prereqs:
+  - build-essential
+  - dkms
+  - software-properties-common
+  - curl
+  - wget
+  - gnupg
+
+# NVIDIA CUDA apt repo keyring (Ubuntu 24.04, x86_64). Refresh manually
+# when NVIDIA cycles the keyring version (rare; current is 1.1-1).
+nvidia_install_cuda_keyring_url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+
+# NVIDIA Container Toolkit repo — gpgkey + sources list.
+nvidia_install_nct_keyring_url: https://nvidia.github.io/libnvidia-container/gpgkey
+nvidia_install_nct_repo_list_url: https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list

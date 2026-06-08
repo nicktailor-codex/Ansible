@@ -1,0 +1,58 @@
+---
+# slurm prolog/epilog deployment.
+# Slurm runs all executable files in prolog.d/ before each job step, and
+# epilog.d/ after. The Prolog= and Epilog= directives in slurm.conf
+# point at these directories (trailing slash tells Slurm to iterate).
+#
+# Must be deployed on EVERY node — prologs/epilogs execute on the
+# compute node where the job lands, not on the controller.
+
+- name: prolog.d directory exists
+  ansible.builtin.file:
+    path: /etc/slurm/prolog.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: epilog.d directory exists
+  ansible.builtin.file:
+    path: /etc/slurm/epilog.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy prolog scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/slurm/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - prolog.d/10-job-scratch.sh
+    - prolog.d/20-enroot-scratch.sh
+
+- name: Deploy epilog scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/slurm/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - epilog.d/90-job-scratch.sh
+
+# Dispatcher wrappers — slurm.conf's Prolog= and Epilog= point at these
+# because the 23.11 directives don't accept directories.
+- name: Deploy prolog/epilog dispatcher wrappers
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/slurm/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - prolog.sh
+    - epilog.sh

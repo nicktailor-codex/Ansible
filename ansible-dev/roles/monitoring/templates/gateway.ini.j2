@@ -1,0 +1,23 @@
+# {{ ansible_managed }}
+# slurm-web gateway — public-facing UI + reverse proxy to agent.
+
+[service]
+interface={{ monitoring_gateway_interface }}
+port={{ monitoring_gateway_port }}
+cors=yes
+
+[ui]
+# Use IP rather than hostname so a corporate-laptop browser without
+# internal DNS for the cluster name can still reach the API endpoints
+# the Vue app calls.
+host=http://{{ network_primary_ip }}:{{ monitoring_gateway_port }}/
+enabled=yes
+
+[agents]
+url=
+  http://127.0.0.1:{{ monitoring_agent_port }}
+
+[authentication]
+# Dev posture — no login. Bring this up to LDAP+JWT when this becomes
+# user-facing (corporate AD via ldaps://insmed.local).
+enabled=no

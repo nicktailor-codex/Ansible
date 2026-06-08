@@ -1,0 +1,28 @@
+---
+# mail role — smarthost relay through Exchange Online Protection.
+
+# bsd-mailx gives us /usr/bin/mail — accepts `-s subject recipient`
+# and pipes through /usr/sbin/sendmail (the exim4 one). Slurm's
+# MailProg calls this for job notifications.
+- name: bsd-mailx installed (provides /usr/bin/mail with -s support)
+  ansible.builtin.apt:
+    name: bsd-mailx
+    state: present
+
+- name: exim4 update config (smarthost selector)
+  ansible.builtin.template:
+    src: update-exim4.conf.conf.j2
+    dest: "{{ mail_update_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: update exim4 conf
+
+- name: "Local→external From-address mapping"
+  ansible.builtin.template:
+    src: email-addresses.j2
+    dest: "{{ mail_email_addresses_path }}"
+    owner: root
+    group: Debian-exim
+    mode: "0640"
+  notify: update exim4 conf

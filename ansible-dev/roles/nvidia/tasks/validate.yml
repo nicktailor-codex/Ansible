@@ -1,0 +1,23 @@
+---
+# nvidia validate — sanity check that the driver is loaded and matches
+# the version we expect. Fails loudly if the node has drifted.
+#
+# Doesn't change state; safe to run any time.
+
+- name: Query installed driver version via nvidia-smi
+  ansible.builtin.command:
+    cmd: nvidia-smi --query-gpu=driver_version --format=csv,noheader
+  register: nvidia_smi_driver
+  changed_when: false
+  check_mode: false
+
+- name: Driver version on each GPU matches nvidia_expected_driver_version
+  ansible.builtin.assert:
+    that:
+      - nvidia_smi_driver.stdout_lines | unique | length == 1
+      - (nvidia_smi_driver.stdout_lines | unique | first) == nvidia_expected_driver_version
+    success_msg: "Driver {{ nvidia_expected_driver_version }} loaded on all GPUs."
+    fail_msg: >-
+      Driver version mismatch on {{ inventory_hostname }}.
+      Expected: {{ nvidia_expected_driver_version }}
+      Got: {{ nvidia_smi_driver.stdout_lines | unique | join(', ') }}

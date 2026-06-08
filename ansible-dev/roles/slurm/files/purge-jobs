@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# purge-jobs — delete slurmdbd job records by ID. Always backs up the
+# affected rows to /var/backups/slurmdbd-purge-<ts>.sql first.
+#
+# Default mode is DRY-RUN — must pass --confirm to actually delete.
+# Refuses to delete jobs still in slurmctld's live queue.
+#
+# Usage:
+#   purge-jobs <jobid> [<jobid>...]                # dry-run by default
+#   purge-jobs <jobid> [<jobid>...] --confirm      # actually delete
+#
+# Requires root (talks to slurmdbd's MySQL via unix_socket).
+
+set -euo pipefail
+
+DB=slurm_acct_db
+CLUSTER=research-cluster
+JOB_TBL="${CLUSTER}_job_table"
+STEP_TBL="${CLUSTER}_step_table"
+BACKUP_DIR=/var/backups
+
+[[ $EUID -ne 0 ]] && { echo "must be root (uses unix_socket auth to slurmdbd MySQL)"; exit 1; }
+
+usage() {
+    echo "usage: purge-jobs <jobid> [<jobid>...] [--confirm]"
+    echo "  dry-run by default; --confirm to actually delete"
+    echo "  backs up affected rows to ${BACKUP_DIR}/slurmdbd-purge-<ts>.sql"
+    exit 1
+}
+
+DRY=1
+IDS=()
+for arg in "$@"; do
+    case "$arg" in
+        --confirm|-y) DRY=0 ;;
+        --dry-run|-n) DRY=1 ;;
+        -h|--help)    usage ;;
+        [0-9]*)       IDS+=("$arg") ;;
+        *)            echo "unknown arg: $arg"; usage ;;
+    esac
+done
+[[ ${#IDS[@]} -eq 0 ]] && usage
+
+# Refuse to touch jobs still tracked by live slurmctld.
+LIVE=()
+for id in "${IDS[@]}"; do
+    if sudo -u slurm squeue -j "$id" -h -o "%i" 2>/dev/null | grep -q .; then
+        LIVE+=("$id")
+    fi
+done
+if [[ ${#LIVE[@]} -gt 0 ]]; then
+    echo "ERROR: these jobs are still in slurmctld's live queue: ${LIVE[*]}"
+    echo "scancel them first, then re-run."
+    exit 1
+fi
+
+IDS_CSV=$(IFS=,; echo "${IDS[*]}")
+
+# Show what we'd touch
+echo "▸ Jobs matching IDs: ${IDS[*]}"
+mysql -N -s "$DB" -e "
+    SELECT id_job, account, id_user, FROM_UNIXTIME(time_submit), state
+    FROM \`${JOB_TBL}\`
+    WHERE id_job IN (${IDS_CSV})
+    ORDER BY id_job;
+" | column -t -N 'jobid,account,uid,submit,state'
+
+FOUND=$(mysql -N -s "$DB" -e "SELECT COUNT(*) FROM \`${JOB_TBL}\` WHERE id_job IN (${IDS_CSV})")
+echo "  -> ${FOUND} record(s) match"
+
+if [[ "$FOUND" == "0" ]]; then
+    echo "Nothing to do."
+    exit 0
+fi
+
+if [[ $DRY -eq 1 ]]; then
+    echo
+    echo "(dry-run — pass --confirm to delete)"
+    exit 0
+fi
+
+# Backup — two layers:
+#  1. Full DB snapshot (safety net — if this script ever deletes more than
+#     intended, we can restore the whole accounting DB)
+#  2. Targeted dump of affected rows (quick restore for the common case)
+mkdir -p "$BACKUP_DIR"
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+BACKUP_BASE="${BACKUP_DIR}/slurmdbd-purge-${TS}"
+
+echo "▸ Full DB snapshot (safety net)..."
+mysqldump "$DB" | gzip > "${BACKUP_BASE}.full.sql.gz"
+FULL_SIZE=$(du -h "${BACKUP_BASE}.full.sql.gz" | cut -f1)
+echo "  -> ${BACKUP_BASE}.full.sql.gz (${FULL_SIZE})"
+
+echo "▸ Targeted backup of affected rows..."
+JOB_DBIDX=$(mysql -N -s "$DB" -e "SELECT job_db_inx FROM \`${JOB_TBL}\` WHERE id_job IN (${IDS_CSV})" | paste -sd,)
+mysqldump "$DB" "${JOB_TBL}" --where="id_job IN (${IDS_CSV})" > "${BACKUP_BASE}.job.sql"
+if [[ -n "$JOB_DBIDX" ]]; then
+    mysqldump "$DB" "${STEP_TBL}" --where="job_db_inx IN (${JOB_DBIDX})" > "${BACKUP_BASE}.step.sql"
+fi
+echo "  -> ${BACKUP_BASE}.{job,step}.sql"
+
+# Delete steps first (FK), then jobs
+mysql "$DB" <<EOF
+DELETE FROM \`${STEP_TBL}\` WHERE job_db_inx IN (SELECT * FROM (SELECT job_db_inx FROM \`${JOB_TBL}\` WHERE id_job IN (${IDS_CSV})) tmp);
+DELETE FROM \`${JOB_TBL}\` WHERE id_job IN (${IDS_CSV});
+EOF
+
+echo
+echo "✓ Deleted ${FOUND} job record(s)."
+echo "  Full DB snapshot:    ${BACKUP_BASE}.full.sql.gz"
+echo "  Targeted row dump:   ${BACKUP_BASE}.{job,step}.sql"
+echo
+echo "Restore (just the purged rows):"
+echo "  mysql ${DB} < ${BACKUP_BASE}.job.sql"
+echo "  mysql ${DB} < ${BACKUP_BASE}.step.sql"
+echo
+echo "Restore the whole DB (full rollback to pre-purge state — DESTRUCTIVE):"
+echo "  zcat ${BACKUP_BASE}.full.sql.gz | mysql ${DB}"

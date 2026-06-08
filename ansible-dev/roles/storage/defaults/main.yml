@@ -1,0 +1,39 @@
+---
+# storage role defaults.
+# NetApp filer IPs and NFS mount options are sourced from
+# inventory/group_vars/all.yml (cluster-wide truth). This role just
+# composes them into the per-mount entries below.
+
+# All NFS mounts from the NetApp filer. The filer IP is interpolated
+# from group_vars/all.yml's `netapp_server`, so a future NetApp swap
+# only requires changing one place. ansible.posix.mount handles both
+# the fstab line and the live mount state in one shot.
+#
+# humgen_protected was removed from NetApp 2026-05-28; re-add here if it
+# comes back. The /mnt/humgen_protected mount-point dir is still present
+# on each node (cosmetic leftover).
+storage_nfs_mounts:
+  - { path: /software,        src: "{{ netapp_server }}:/software" }
+  - { path: /home,            src: "{{ netapp_server }}:/home" }
+  # Team volumes — mount-point dir + the NFS mount only. Group ownership
+  # and mode are owned by the team-volumes role (sets hpc_<team> on each).
+  # manage_perms=false tells the storage role NOT to chown/chmod the live
+  # mount; without this flag, storage's `file:` task defaults to
+  # root:root:0755 and reverts team-volumes' work on every run.
+  - { path: /mnt/compchem,    src: "{{ netapp_server }}:/compchem",    manage_perms: false }
+  - { path: /mnt/humgen,      src: "{{ netapp_server }}:/humgen",      manage_perms: false }
+  - { path: /mnt/informatics, src: "{{ netapp_server }}:/informatics", manage_perms: false }
+
+# Mount options applied to every entry above. Source: nfs_mount_opts
+# in group_vars/all.yml — the cluster-wide canonical NFSv4 opts string.
+# The _netdev flag tells systemd to wait for network before mounting at boot.
+storage_nfs_opts: "{{ nfs_mount_opts }}"
+
+# NFSv4 ID mapping domain — must match NetApp SVM's -v4-id-domain to get
+# real owner names instead of nobody:nogroup. Sourced from group_vars'
+# `ad_domain` (insmed.local) since they're the same value.
+storage_idmapd_domain: "{{ ad_domain }}"
+
+# Local scratch shared-software bootstrap area (pre-NetApp, kept for legacy
+# fallback paths). Sticky world-writable like /tmp.
+storage_cluster_software_dir: /scratch/cluster-software

@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+# Map local accounts → external From: addresses. Every local mail-emitting
+# user gets rewritten to the per-node sender so EOP accepts the message
+# (EOP rejects unrouteable local-domain senders).
+
+root:    {{ mail_sender_node }}@{{ mail_domain }}
+slurm:   {{ mail_sender_node }}@{{ mail_domain }}
+www-data: {{ mail_sender_node }}@{{ mail_domain }}

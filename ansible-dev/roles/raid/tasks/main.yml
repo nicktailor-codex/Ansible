@@ -1,0 +1,52 @@
+---
+# raid role — verify mdraid arrays match expected layout and are healthy.
+# No modifications by default. Fails loudly if any array is degraded,
+# missing, or has failed devices — that's the cue for a human to look.
+#
+# Diagnostic-repair available via `--tags repair`. It does NOT execute
+# any mdadm modifications — just emits the exact `--re-add` / `--add`
+# commands for an operator to review and run. RAID 0 (md1, /scratch)
+# is fundamentally unrecoverable from drive loss; the repair output
+# explains the options.
+
+# Diagnostic-repair path — opt-in only. `never` tag prevents accidental
+# default runs from doing anything mdadm-related.
+- name: Repair diagnostics (--tags repair only)
+  ansible.builtin.import_tasks: repair.yml
+  tags: [repair, never]
+
+- name: Read mdadm --detail for each expected array
+  ansible.builtin.command:
+    cmd: "mdadm --detail {{ item.name }}"
+  loop: "{{ raid_expected_arrays }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: raid_detail
+  changed_when: false
+  check_mode: false
+  failed_when: raid_detail.rc != 0
+  tags: [raid, validate]
+
+- name: Assert each array is healthy
+  ansible.builtin.assert:
+    that:
+      - "'Raid Level : ' + item.item.level in item.stdout"
+      - "('State : active' in item.stdout) or ('State : clean' in item.stdout)"
+      - "'Active Devices : ' + (item.item.devices | string) in item.stdout"
+      - "'Working Devices : ' + (item.item.devices | string) in item.stdout"
+      - "'Failed Devices : 0' in item.stdout"
+      - "'Spare Devices : 0' in item.stdout"
+    success_msg: >-
+      {{ item.item.name }} OK — {{ item.item.level }},
+      {{ item.item.devices }} active devices, 0 failed
+      ({{ item.item.purpose }}).
+    fail_msg: >-
+      {{ item.item.name }} FAILED health check.
+      Expected: {{ item.item.level }} with {{ item.item.devices }} active
+      devices, State=active|clean, 0 failed, 0 spare.
+      Actual key lines from mdadm:
+      {{ item.stdout_lines | select('search', '(State|Devices|Raid Level)') | list }}
+  loop: "{{ raid_detail.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+  tags: [raid, validate]

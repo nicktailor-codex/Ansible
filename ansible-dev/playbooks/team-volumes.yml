@@ -1,0 +1,10 @@
+---
+# team-volumes — set AD-group ownership on shared NetApp team volumes.
+# Runs on the controller only since /software + /mnt/* are NetApp-shared:
+# changing group from one node is visible everywhere instantly.
+
+- name: team-volumes — AD group ownership on shared volumes
+  hosts: "{{ slurm_controller | default('insiiukcpu01') }}"
+  become: true
+  roles:
+    - team-volumes

@@ -1,0 +1,24 @@
+---
+- name: reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: yes
+
+- name: restart slurmrestd
+  ansible.builtin.systemd:
+    name: slurmrestd
+    state: restarted
+
+- name: restart slurm-web-agent
+  ansible.builtin.systemd:
+    name: slurm-web-agent
+    state: restarted
+
+- name: restart slurm-web-gateway
+  ansible.builtin.systemd:
+    name: slurm-web-gateway
+    state: restarted
+
+- name: restart sacctweb
+  ansible.builtin.systemd:
+    name: sacctweb
+    state: restarted

@@ -1,0 +1,10 @@
+# Site-scoped Spack repos config — registers our `insmed` package overlay
+# alongside the builtin repo. Survives Spack version bumps (where the
+# user-scope repos.yaml in ~/.spack/ would get lost).
+#
+# Order matters: insmed first means our packages override builtin when the
+# name matches (so `samtools` resolves to our backport that adds version
+# 1.20, while still inheriting everything else from builtin).
+repos:
+  - /software/spack/var/spack/repos/insmed
+  - $spack/var/spack/repos/builtin

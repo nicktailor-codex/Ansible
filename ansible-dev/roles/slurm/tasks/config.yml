@@ -1,0 +1,56 @@
+---
+# slurm config push.
+# All 4 nodes get slurm.conf, cgroup.conf, plugstack.conf (canonical
+# copies — Slurm requires them to be identical cluster-wide).
+# Only GPU-bearing nodes get gres.conf (gated by `slurm_gpu_type`).
+
+- name: slurm.conf canonical
+  ansible.builtin.copy:
+    src: slurm.conf
+    dest: /etc/slurm/slurm.conf
+    owner: "{{ slurm_conf_owner }}"
+    group: "{{ slurm_conf_group }}"
+    mode: "{{ slurm_conf_mode }}"
+  # slurm.conf is read by BOTH daemons. Prolog/Epilog directives are
+  # read by slurmd on the compute node where the job lands. Partition
+  # QoS / AccountingStorageTRES / EnforcePartLimits are read by
+  # slurmctld. Any slurm.conf change must restart both.
+  notify:
+    - restart slurmctld
+    - restart slurmd
+
+- name: cgroup.conf canonical
+  ansible.builtin.copy:
+    src: cgroup.conf
+    dest: /etc/slurm/cgroup.conf
+    owner: "{{ slurm_conf_owner }}"
+    group: "{{ slurm_conf_group }}"
+    mode: "{{ slurm_conf_mode }}"
+  notify: restart slurmd
+
+- name: MailProg wrapper (qualifies bare recipients with @insmed.com)
+  ansible.builtin.copy:
+    src: slurm-mail.sh
+    dest: /etc/slurm/slurm-mail.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: plugstack.conf canonical (SPANK plugin stack — Pyxis)
+  ansible.builtin.copy:
+    src: plugstack.conf
+    dest: /etc/slurm/plugstack.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart slurmd
+
+- name: gres.conf (GPU nodes only)
+  ansible.builtin.template:
+    src: gres.conf.j2
+    dest: /etc/slurm/gres.conf
+    owner: "{{ slurm_conf_owner }}"
+    group: "{{ slurm_conf_group }}"
+    mode: "{{ slurm_conf_mode }}"
+  when: slurm_gpu_type is defined
+  notify: restart slurmd

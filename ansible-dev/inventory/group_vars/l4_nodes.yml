@@ -1,0 +1,3 @@
+---
+# l4_nodes group — insiiukcgpu01 (NVIDIA L4)
+slurm_gpu_type: l4

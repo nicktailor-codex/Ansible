@@ -1,0 +1,6 @@
+---
+# mail role defaults. Smarthost relay through Exchange Online Protection.
+# Most values come from inventory/group_vars/all.yml (relay host/port/domain)
+# and inventory/host_vars/<host>.yml (per-host mail_sender_node).
+mail_update_conf_path: /etc/exim4/update-exim4.conf.conf
+mail_email_addresses_path: /etc/email-addresses

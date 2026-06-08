@@ -1,0 +1,38 @@
+---
+# nvidia role — entry point.
+# Imports tagged sub-task files so individual concerns can be run alone.
+#
+# Default run (no --tags): lockdown + validate + runtime
+#   — idempotent against a working GPU node, no reboots.
+#
+# Fresh-node bootstrap (--tags install): includes up to 3 reboots
+#   (kernel update, nouveau unload, driver load). Each reboot is gated
+#   on the prior task changing state, so re-running on an already-
+#   provisioned node is also a no-op.
+#
+# Common invocations:
+#   ansible-playbook playbooks/nvidia.yml                      → default
+#   ansible-playbook playbooks/nvidia.yml --tags install       → install only
+#   ansible-playbook playbooks/nvidia.yml --tags install,nvidia → fresh build
+#   ansible-playbook playbooks/nvidia.yml --tags validate      → version assert
+
+# Fresh-install path comes FIRST (and is opt-in only).
+# The 'never' tag means these tasks only run when --tags install (or
+# --tags never) is explicitly passed. Without it, Ansible would run
+# every tagged task by default. CRITICAL — without 'never', `ansible-
+# playbook playbooks/nvidia.yml` (no --tags) would reboot the GPUs.
+- name: Install — fresh-node driver / CUDA / container-toolkit bootstrap
+  ansible.builtin.import_tasks: install.yml
+  tags: [install, never]
+
+- name: Lockdown — apt-mark hold + unattended-upgrades blacklist
+  ansible.builtin.import_tasks: lockdown.yml
+  tags: [nvidia, lockdown]
+
+- name: Runtime — nvidia-persistenced active
+  ansible.builtin.import_tasks: runtime.yml
+  tags: [nvidia, runtime]
+
+- name: Validate — driver loaded, version matches expected
+  ansible.builtin.import_tasks: validate.yml
+  tags: [nvidia, validate]

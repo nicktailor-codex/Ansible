@@ -1,0 +1,61 @@
+---
+# slurm validate — confirm daemons + config match reality.
+# Read-only; safe in --check mode.
+
+- name: slurmd is active on this node
+  ansible.builtin.command:
+    cmd: systemctl is-active slurmd
+  register: slurmd_state
+  changed_when: false
+  check_mode: false
+  failed_when: slurmd_state.stdout != "active"
+
+- name: munge is active on this node
+  ansible.builtin.command:
+    cmd: systemctl is-active munge
+  register: munge_state
+  changed_when: false
+  check_mode: false
+  failed_when: munge_state.stdout != "active"
+
+# slurmd -G is the canonical "what GRES does Slurm actually see" probe.
+# Output goes to stderr in the form:
+#   slurmd: Gres Name=gpu Type=h200_nvl Count=1 ... File=/dev/nvidia0 ...
+# We assert Type and File match the role's gres.conf — catches both
+# config drift and template-rendering mistakes.
+- name: Detected GRES via slurmd -G (GPU nodes only)
+  ansible.builtin.command:
+    cmd: slurmd -G
+  register: slurmd_g
+  changed_when: false
+  check_mode: false
+  when: slurm_gpu_type is defined
+
+- name: Detected GRES matches gres.conf (Type and File)
+  ansible.builtin.assert:
+    that:
+      - "'Type=' + slurm_gpu_type in slurmd_g.stderr"
+      - "'File=/dev/nvidia0' in slurmd_g.stderr"
+    success_msg: "GRES matches: Type={{ slurm_gpu_type }} File=/dev/nvidia0"
+    fail_msg: >-
+      GRES mismatch on {{ inventory_hostname }}.
+      Expected Type={{ slurm_gpu_type }}, File=/dev/nvidia0.
+      slurmd -G said: {{ slurmd_g.stderr }}
+  when: slurm_gpu_type is defined
+
+- name: sinfo from the controller — all nodes responding
+  ansible.builtin.command:
+    cmd: sinfo --noheader --format=%n,%T
+  delegate_to: "{{ slurm_controller_host }}"
+  run_once: true
+  register: sinfo_out
+  changed_when: false
+  check_mode: false
+
+- name: No nodes in down/drain/fail state
+  ansible.builtin.assert:
+    that:
+      - sinfo_out.stdout_lines | select('search', ',(down|drain|fail|unknown)') | list | length == 0
+    success_msg: "All Slurm nodes idle/alloc/mix — cluster healthy."
+    fail_msg: "Some nodes in down/drain/fail/unknown: {{ sinfo_out.stdout }}"
+  run_once: true

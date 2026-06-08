@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+# slurm-web agent — talks to slurmrestd, exposes its own REST API to the gateway.
+
+[service]
+cluster={{ slurm_cluster_name }}
+interface=127.0.0.1
+port={{ monitoring_agent_port }}
+cors=yes
+
+[slurmrestd]
+uri=unix:{{ monitoring_slurmrestd_socket }}
+# auth=local works because Slurm 23.11 supports it and the agent runs
+# as the slurm-web user (in the slurm group), so it can read the
+# slurmrestd socket. Switch to auth=jwt when we bump Slurm to 25.05+.
+auth=local
+# Pin to slurmrestd 0.0.39 (Slurm 23.11's schema). slurm-web v4
+# defaults to 0.0.41 (Slurm 24.x) which Ubuntu 24.04 doesn't have.
+version=0.0.39
+
+[racksdb]
+# RacksDB integration disabled — we don't run RacksDB. The package is
+# installed (it's a hard dep of slurm-web's Python imports), but the
+# feature itself is off.
+enabled=no

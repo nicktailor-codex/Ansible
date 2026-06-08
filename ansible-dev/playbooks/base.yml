@@ -1,0 +1,12 @@
+---
+# base.yml — apply the base role to every cluster node.
+# Run dry-run first:
+#   ansible-playbook playbooks/base.yml --check --diff
+# Then for real:
+#   ansible-playbook playbooks/base.yml
+
+- name: Apply base role to all cluster nodes
+  hosts: all_cluster
+  gather_facts: yes
+  roles:
+    - base

@@ -1,0 +1,63 @@
+---
+# raid repair — diagnose degraded arrays and emit `mdadm --re-add`
+# commands a human can review and execute. Tag-gated as
+# [repair, never] so it never runs by accident.
+#
+# Why NOT auto-execute:
+#   - Re-adding a drive that was kicked for a real hardware fault can
+#     fail again mid-rebuild, sometimes at the worst possible moment.
+#   - If the drive was kicked for a cable/kernel hiccup, re-add is the
+#     right call — but the operator should verify dmesg first.
+#   - RAID 0 (md1) is unrecoverable from a drive loss anyway. The role
+#     reports the disaster and stops.
+
+- name: Re-read mdadm --detail (after the validate phase may have failed)
+  ansible.builtin.command:
+    cmd: "mdadm --detail {{ item.name }}"
+  loop: "{{ raid_expected_arrays }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: raid_repair_detail
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: Per-array diagnosis
+  ansible.builtin.debug:
+    msg: |
+      ── {{ item.item.name }} ({{ item.item.purpose }}) ──
+      Raid Level:      {{ item.item.level }}
+      Health state:    {{ (item.stdout_lines | select('search', 'State :') | first | default('???')) }}
+      Active Devices:  {{ (item.stdout_lines | select('search', 'Active Devices :') | first | default('???')) }}
+      Failed Devices:  {{ (item.stdout_lines | select('search', 'Failed Devices :') | first | default('???')) }}
+
+      {% if 'removed' in item.stdout or 'faulty' in item.stdout -%}
+      ⚠️  DEGRADED — broken device slots:
+      {{ item.stdout_lines | select('search', '(removed|faulty)') | list | join('\n') }}
+
+      {% if item.item.level == 'raid1' -%}
+      Suggested re-add (verify dmesg first — drive may be physically failing):
+        sudo dmesg | grep -i nvme | tail -20
+        sudo mdadm --re-add {{ item.item.name }} /dev/<nvmeXnY-that-fell-out>
+
+      If the drive is truly dead, replace and use --add instead of --re-add:
+        sudo mdadm --add {{ item.item.name }} /dev/<new-nvme-device>
+
+      Watch the rebuild:
+        cat /proc/mdstat   # shows resync progress (e.g., "[====>........]  resync = 25.3%")
+      {% elif item.item.level == 'raid0' -%}
+      ❌  RAID 0 has no redundancy — this array is GONE. No --re-add will work.
+      Options:
+        1. Replace the failed drive, recreate the array (DESTROYS data):
+             sudo mdadm --stop {{ item.item.name }}
+             sudo mdadm --create {{ item.item.name }} --level=0 --raid-devices={{ item.item.devices }} <list-of-nvme-devices>
+             sudo mkfs.xfs {{ item.item.name }}  # or whatever filesystem you want
+        2. Restore /scratch contents from backup (if any).
+        3. Accept the loss — /scratch is meant to be ephemeral by design.
+      {%- endif %}
+      {%- else -%}
+      ✅ Array is healthy. No repair needed.
+      {%- endif %}
+  loop: "{{ raid_repair_detail.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

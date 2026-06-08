@@ -1,0 +1,18 @@
+---
+# networking.yml — apply the networking role to all cluster nodes.
+#
+# ⚠️  WARNING: a wrong netplan can leave a node unreachable. Run
+# --check --diff first to confirm the rendered template is byte-equal
+# (or close to it) to the live /etc/netplan/50-cloud-init.yaml before
+# applying.
+#
+# Dry-run:
+#   ansible-playbook playbooks/networking.yml --check --diff
+# Apply:
+#   ansible-playbook playbooks/networking.yml
+
+- name: Apply networking role to all cluster nodes
+  hosts: all_cluster
+  gather_facts: yes
+  roles:
+    - networking

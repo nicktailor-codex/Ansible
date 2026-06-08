@@ -1,0 +1,12 @@
+// Block unattended-upgrades from touching NVIDIA driver / CUDA / container packages.
+// An automatic driver bump desyncs the loaded kernel module from the userspace
+// libraries ("Driver/library version mismatch"), breaking GPU detection and draining
+// the Slurm node. Driver updates must be deliberate: unhold -> upgrade -> reboot -> re-hold.
+Unattended-Upgrade::Package-Blacklist {
+    "nvidia-";
+    "libnvidia-";
+    "cuda-";
+    "nsight-";
+    "datacenter-gpu-manager";
+    "nvidia-container";
+};

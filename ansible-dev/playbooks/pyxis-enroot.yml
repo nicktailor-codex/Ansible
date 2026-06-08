@@ -1,0 +1,14 @@
+---
+# pyxis-enroot.yml — apply the pyxis-enroot role to all cluster nodes.
+# v1: config push + validate (no install path yet).
+#
+# Dry-run:
+#   ansible-playbook playbooks/pyxis-enroot.yml --check --diff
+# Apply:
+#   ansible-playbook playbooks/pyxis-enroot.yml
+
+- name: Apply pyxis-enroot role to all cluster nodes
+  hosts: all_cluster
+  gather_facts: yes
+  roles:
+    - pyxis-enroot

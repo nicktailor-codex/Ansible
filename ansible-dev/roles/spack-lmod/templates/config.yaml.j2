@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+# /software/spack/etc/spack/config.yaml — site-wide Spack config.
+# Lives on NetApp shared volume so every node sees the same install tree.
+
+config:
+  install_tree:
+    root: {{ spack_root }}/opt/spack
+    # Flat layout keeps install paths short and module names clean.
+    projections:
+      all: '{name}-{version}-{hash:7}'
+
+  # Per-user staging on local /scratch — build I/O stays off NetApp.
+  build_stage:
+    - /scratch/$user/spack-stage
+
+  # Source tarball cache (small — fine on NetApp).
+  source_cache: {{ spack_root }}/var/spack/cache
+
+  # Misc — quieter builds, faster fetch retries.
+  build_jobs: 16
+  ccache: false
+  shared_linking:
+    type: rpath
+    bind: false
+  verify_ssl: true
+  connect_timeout: 30

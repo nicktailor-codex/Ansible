@@ -1,0 +1,98 @@
+---
+# slurm accounting — sacctmgr-managed account hierarchy + QoSes.
+# Runs only on the controller (slurmdbd lives there). Idempotent.
+#
+# Scope: ensure the 'informatics' parent account exists, ensure the
+# QoSes in slurm_qos_definitions exist with their canonical Priority +
+# MaxWall, and bind those QoSes to the informatics account.
+#
+# Idempotence pattern: sacctmgr's `add` / `create` commands return rc=1
+# when the object already exists ("Nothing new added." or "Already
+# existing account ..."). We treat those as ok-no-op; only the
+# "Adding ..." / "Modified ..." stdout markers count as a real change.
+#
+# History: the parent account was renamed from 'research' →
+# 'informatics' on 2026-05-31 via a one-shot sacctmgr dance (delete-and-
+# recreate; sacctmgr in 23.11 can't `set name=` on an account). This
+# role manages forward state — a fresh cluster would build informatics
+# directly without ever creating research.
+
+# ── Account ─────────────────────────────────────────────────
+- name: Ensure 'informatics' parent account exists
+  ansible.builtin.command:
+    cmd: >-
+      sacctmgr -i add account informatics
+      description='informatics organisation root'
+      organization=informatics
+  register: slurm_acct_add
+  changed_when: "'Adding Account' in (slurm_acct_add.stdout | default(''))"
+  failed_when:
+    - slurm_acct_add.rc != 0
+    - "'Already existing account' not in (slurm_acct_add.stdout | default(''))"
+  run_once: true
+  delegate_to: "{{ slurm_controller_host }}"
+
+# ── QoS list ────────────────────────────────────────────────
+- name: Ensure QoSes exist
+  ansible.builtin.command:
+    cmd: >-
+      sacctmgr -i create qos {{ item.name }}
+      Priority={{ item.priority }}
+      MaxWall={{ item.maxwall }}
+  register: slurm_qos_create
+  changed_when: "'Adding QOS' in (slurm_qos_create.stdout | default(''))"
+  failed_when:
+    - slurm_qos_create.rc != 0
+    - "'Nothing new added' not in (slurm_qos_create.stdout | default(''))"
+  loop: "{{ slurm_qos_definitions }}"
+  loop_control:
+    label: "{{ item.name }}"
+  run_once: true
+  delegate_to: "{{ slurm_controller_host }}"
+
+# sacctmgr modify ALWAYS prints "Modified qos..." even on no-op, so we
+# can't rely on stdout for changed_when. Compare current state first.
+- name: Snapshot current QoS settings (for drift detection)
+  ansible.builtin.command:
+    cmd: sacctmgr -nP show qos format=Name,Priority,MaxWall
+  register: slurm_qos_current
+  changed_when: false
+  check_mode: false
+  run_once: true
+  delegate_to: "{{ slurm_controller_host }}"
+
+- name: Enforce canonical Priority + MaxWall on each QoS (drift correction)
+  ansible.builtin.command:
+    cmd: >-
+      sacctmgr -i modify qos {{ item.name }} set
+      Priority={{ item.priority }}
+      MaxWall={{ item.maxwall }}
+  loop: "{{ slurm_qos_definitions }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: (item.name ~ '|' ~ (item.priority | string) ~ '|' ~ item.maxwall) not in (slurm_qos_current.stdout_lines | default([]))
+  run_once: true
+  delegate_to: "{{ slurm_controller_host }}"
+
+# ── Bind QoSes to the informatics account ───────────────────
+# Same idempotence trick: snapshot current assoc, only modify on drift.
+# Account-level row has empty user; QoS list is comma-joined and stored
+# in slurmdbd in sorted order, so we compare against the sorted form.
+- name: Snapshot current 'informatics' account QoS association
+  ansible.builtin.command:
+    cmd: sacctmgr -nP show association where account=informatics user= format=Account,DefaultQOS,QOS
+  register: slurm_acct_qos_current
+  changed_when: false
+  check_mode: false
+  run_once: true
+  delegate_to: "{{ slurm_controller_host }}"
+
+- name: Associate QoSes with 'informatics' account (drift correction)
+  ansible.builtin.command:
+    cmd: >-
+      sacctmgr -i modify account informatics set
+      qos={{ slurm_qos_definitions | map(attribute='name') | sort | join(',') }}
+      defaultqos=normal
+  when: ('informatics|normal|' ~ (slurm_qos_definitions | map(attribute='name') | sort | join(','))) not in (slurm_acct_qos_current.stdout_lines | default([]))
+  run_once: true
+  delegate_to: "{{ slurm_controller_host }}"

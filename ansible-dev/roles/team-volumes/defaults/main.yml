@@ -1,0 +1,15 @@
+---
+# team-volumes role — set group ownership + setgid mode on shared
+# NetApp team volumes so files are accessible only to members of the
+# given AD group. Requires SSSD/AD already resolving group names.
+#
+# The role is a no-op if team_volumes is empty. Populate it via
+# inventory/group_vars/all.yml as new AD groups arrive.
+#
+# Example entry:
+#   - ad_group: HPC-CompChem
+#     path:     /mnt/compchem
+#     mode:     "2770"          # 2=setgid, 770=owner+group rwx, others nothing
+#                               # setgid means new files inherit the AD group
+
+team_volumes: []

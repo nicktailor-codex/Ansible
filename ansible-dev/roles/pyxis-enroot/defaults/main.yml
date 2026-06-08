@@ -1,0 +1,27 @@
+---
+# pyxis-enroot role defaults — v1 (codify current install).
+# Install path (NVIDIA apt repo, enroot pkg, pyxis plugin pkg) lives in
+# run-dir/PyxisEnroot-Setup.md; fold into tasks/install.yml later.
+
+# Expected version — validate.yml asserts the runtime matches.
+pyxis_enroot_version: "3.5.0"
+
+# Pyxis SPANK plugin shared object. Loaded by slurmd via plugstack.conf
+# (managed by the slurm role).
+pyxis_spank_so: /usr/lib/x86_64-linux-gnu/slurm-wlm/spank_pyxis.so
+
+# Canonical enroot config path
+pyxis_enroot_conf: /etc/enroot/enroot.conf
+
+# Shared image cache on NetApp. enroot.conf points ENROOT_CACHE_PATH
+# here so all 4 nodes hit the same `.sqsh` files instead of pulling
+# their own copy per node per user (which was ~6.9GB redundant for the
+# burdentesting image alone). Sticky-world-writable like /tmp so any
+# user can populate the cache via `enroot import`.
+pyxis_enroot_cache_dir: /software/enroot-cache
+pyxis_enroot_cache_mode: "1777"
+
+# Required Debian packages — same set on every node today.
+pyxis_enroot_packages:
+  - enroot
+  - enroot+caps

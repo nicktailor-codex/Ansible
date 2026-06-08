@@ -1,0 +1,27 @@
+---
+# slurm role defaults — v1 (config push only).
+# Munge key, slurmdbd, daemon mgmt, prolog/epilog, install path = v2+.
+
+# Per-node GPU type for gres.conf rendering. Default is unset; group_vars
+# override it on h200_nodes / l4_nodes. The gres.conf task is gated on
+# this being defined, so cpu01 (no GPU) is skipped automatically.
+# slurm_gpu_type: h200_nvl  # set by group_vars
+
+# Controller hostname — only insiiukcpu01 runs slurmctld + slurmdbd. Used
+# by validate.yml when running cluster-wide diagnostics.
+slurm_controller_host: insiiukcpu01
+
+# File ownership matches what's on the nodes today (slurm:slurm for the
+# slurm-owned configs, root:root for plugstack).
+slurm_conf_owner: slurm
+slurm_conf_group: slurm
+slurm_conf_mode: "0644"
+
+# QoS tiers managed by tasks/accounting.yml. Two tiers today: 'debug'
+# for short test jobs that priority-jump, 'normal' as the default for
+# everything else. Cgroup-based memory/CPU/device enforcement already
+# kills jobs that exceed allocated resources (see cgroup.conf); these
+# tiers add walltime caps + queue-priority hierarchy on top.
+slurm_qos_definitions:
+  - { name: debug,  priority: 500, maxwall: "01:00:00" }
+  - { name: normal, priority: 0,   maxwall: "5-00:00:00" }

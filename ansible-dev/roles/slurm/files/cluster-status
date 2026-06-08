@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# cluster-status — at-a-glance node + queue snapshot.
+# Reads Slurm's view (sinfo + squeue); no GPU utilization% (would need
+# per-node nvidia-smi). Runs on any node. Deployed by the slurm role.
+set -euo pipefail
+
+printf "%-15s %-9s %-13s %-15s %-20s\n" "NODE" "STATE" "CORES f/t" "MEM(GB) f/t" "GPU"
+printf -- "-%.0s" {1..78}; echo
+
+sinfo -h -N -O "NodeHost:16,StateLong:10,CPUsState:15,FreeMem:10,Memory:10,Gres:20" \
+  | awk '!seen[$1]++ {
+      mem_f=$4/1024; mem_t=$5/1024
+      # CPUsState is alloc/idle/other/total
+      split($3, c, "/"); cores_free=c[2]; cores_tot=c[4]
+      gpu=$6; if(gpu=="(null)") gpu="-"
+      printf "%-15s %-9s %4d/%-8d %5.0f/%-9.0f %-20s\n", $1, $2, cores_free, cores_tot, mem_f, mem_t, gpu
+    }'
+
+echo
+printf "%-15s %-6s %-13s %-9s %-10s\n" "PARTITION" "NODES" "CORES a/i/o/t" "MAX TIME" "MAX/NODE"
+printf -- "-%.0s" {1..60}; echo
+sinfo -h -o "%P|%D|%C|%l|%B" \
+  | awk -F'|' '{
+      sub(/\*$/, "", $1)   # strip default-partition marker
+      printf "%-15s %-6s %-13s %-9s %-10s\n", $1, $2, $3, $4, ($5=="UNLIMITED"?"-":$5)
+    }'
+
+echo
+echo "QUEUE:  $(squeue -h -t RUNNING 2>/dev/null | wc -l) running, $(squeue -h -t PENDING 2>/dev/null | wc -l) pending"
+sinfo -h -o '%C' | awk -F/ '{a+=$1;i+=$2;t+=$4} END {printf "TOTAL:  %d cores allocated / %d idle / %d total\n", a, i, t}'

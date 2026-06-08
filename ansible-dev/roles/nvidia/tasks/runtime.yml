@@ -1,0 +1,14 @@
+---
+# nvidia runtime — driver runtime tunables.
+# Tag-gated as `runtime`. Today: just nvidia-persistenced enabled+active
+# (which is already the default state — the systemd unit ships as
+# `static` and is wired in by the driver install). Clock-lock tuning
+# is intentionally NOT here — per run-dir/nvidiainstall.sh comments,
+# default behaviour is fine and locking risks lockouts on the wrong
+# clock values (H200 vs L4 differ significantly).
+
+- name: nvidia-persistenced is active (keeps driver loaded between jobs)
+  ansible.builtin.systemd:
+    name: nvidia-persistenced
+    state: started
+    # 'static' unit can't be enabled; just ensure it's running.

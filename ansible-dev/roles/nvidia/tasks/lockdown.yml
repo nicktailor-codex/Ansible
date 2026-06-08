@@ -1,0 +1,22 @@
+---
+# nvidia lockdown — keep the driver/CUDA/container stack pinned so an
+# automatic apt-upgrade can't desync the kernel module from userspace.
+# Pairs the per-package `apt-mark hold` with an unattended-upgrades
+# blacklist (defense in depth — hold alone won't stop u-u if it's
+# configured to ignore holds).
+
+- name: Hold NVIDIA driver / CUDA / container packages against apt upgrades
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ nvidia_held_packages }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Unattended-upgrades blacklist for NVIDIA package globs
+  ansible.builtin.copy:
+    src: 51-nvidia-blacklist
+    dest: "{{ nvidia_blacklist_path }}"
+    owner: root
+    group: root
+    mode: "0644"

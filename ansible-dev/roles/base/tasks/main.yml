@@ -1,0 +1,76 @@
+---
+# base role — packages + /etc/hosts + sysctl baseline that every cluster
+# node needs. Idempotent re-implementation of the current live state.
+
+- name: Cluster host entries (short + FQDN) in /etc/hosts
+  # lineinfile keyed by IP — idempotent. If the IP is already in /etc/hosts
+  # with the exact same line, it's a no-op. If it's there with different
+  # content, it's replaced. No duplicates regardless of where in the file
+  # it currently sits.
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: "^{{ item.ip | regex_escape }}\\s"
+    line: "{{ item.ip }} {{ item.fqdn }} {{ item.short }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ base_cluster_hosts }}"
+  loop_control:
+    label: "{{ item.short }}"
+  tags: [base, hosts]
+
+- name: Required cluster packages installed
+  ansible.builtin.apt:
+    name: "{{ base_packages_present }}"
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+  tags: [base, packages]
+
+- name: Unwanted mail clients removed (exim-only policy)
+  ansible.builtin.apt:
+    name: "{{ base_packages_absent }}"
+    state: absent
+    purge: no
+  tags: [base, packages]
+
+- name: kernel.unprivileged_userns_clone enabled (required for enroot)
+  ansible.posix.sysctl:
+    name: kernel.unprivileged_userns_clone
+    value: "{{ base_userns_clone }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-userns.conf
+    reload: yes
+  tags: [base, sysctl]
+
+- name: HPC sysctl tunables (TCP buffers, swappiness)
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/95-hpc.conf
+    reload: yes
+  loop: "{{ base_hpc_sysctls }}"
+  loop_control:
+    label: "{{ item.name }}={{ item.value }}"
+  tags: [base, sysctl]
+
+# pam_mkhomedir — auto-create /home/<user>/ on first login for AD users
+# resolved via SSSD. pam-auth-update has no useful --query mode, so check
+# the resulting common-session file first; only run the command if missing.
+# Earlier version always-ran with a `changed_when` keyed on stdout, but
+# pam-auth-update is silent on success, so it always reported `changed`.
+- name: Check if pam_mkhomedir already enabled in common-session
+  ansible.builtin.command:
+    cmd: grep -q pam_mkhomedir.so /etc/pam.d/common-session
+  register: pam_mkhomedir_check
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  tags: [base, mkhomedir]
+
+- name: Enable pam_mkhomedir for AD-user home auto-creation on first login
+  ansible.builtin.command:
+    cmd: pam-auth-update --package --enable mkhomedir
+  when: pam_mkhomedir_check.rc != 0
+  tags: [base, mkhomedir]

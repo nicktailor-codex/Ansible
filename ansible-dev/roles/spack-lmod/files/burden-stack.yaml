@@ -1,0 +1,53 @@
+# burden-stack.yaml — Spack environment mirroring the burdentesting Docker
+# image. Pinned versions match what's actually in
+# egardner413/mrcepid-burdentesting:latest (audited 2026-06-01).
+#
+# Admins install via:
+#   source /software/spack/share/spack/setup-env.sh
+#   spack env activate burden
+#   spack install                          # builds everything (hours)
+#   spack module lmod refresh --delete-tree -y
+#
+# Users then `module avail` shows e.g. regenie/3.4.1, plink/1.9-20231211, etc.
+# Modules auto-appear cluster-wide because /software/spack is NetApp-shared.
+
+spack:
+  view: false                # No global view symlinks — modules only.
+  concretizer:
+    unify: false             # Allow side-by-side versions of the same package.
+
+  modules:
+    default:
+      enable: [lmod]
+      lmod:
+        hash_length: 0       # Cleaner module names (no hash suffix).
+        core_compilers: [gcc@13.3.0]
+        all:
+          autoload: direct   # Modules auto-pull their dependency modules.
+
+  # Pinned to match burdentesting image as closely as Spack v0.23.1 allows.
+  # Deltas from image (all functionally equivalent):
+  #   plink:   image=1.90b7.2 (Dec 2023)  -> spack=1.9-beta6.27 (Aug 2023, ~10y-perpetual-beta)
+  #   gcta:    image=1.94.4               -> spack=1.94.1 (only fetchable version on github;
+  #                                                       1.94.4 needs cn-only Yang Lab host)
+  #   python:  image=3.8.10 (EOL)         -> spack=3.11.9 (current Spack-supported)
+  specs:
+    # Genetics binaries — exact-match where possible
+    - regenie@3.4.1
+    - plink@1.9-beta6.27
+    - plink2@2.00a5.11           # exact match
+    - gcta@1.94.1
+
+    # Variant calling / format handling (htslib shared between bcftools+samtools).
+    # bcftools/samtools 1.20 come from our insmed repo backports;
+    # htslib 1.20 is in v0.23.1 builtin.
+    - bcftools@1.20
+    - samtools@1.20
+    - htslib@1.20                # exact match
+
+    # Languages
+    - r@4.3.3                    # exact match
+    - python@3.11.9              # newer than image (3.8.10 EOL'd from Spack)
+
+    # Useful adjuncts
+    - jq

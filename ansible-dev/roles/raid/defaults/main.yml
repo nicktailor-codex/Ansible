@@ -1,0 +1,19 @@
+---
+# raid role defaults — expected mdraid layout per node.
+# Every cluster node should have the same two arrays. Names/UUIDs differ
+# per node (each array is unique), but level + device count are constant.
+#
+# Scope: verify only. The role NEVER runs `mdadm --create` — fresh array
+# build is a deliberate, manual operation. A separate `repair` tag is
+# available to attempt `--re-add` of failed drives when explicitly invoked.
+
+raid_expected_arrays:
+  - name: /dev/md0
+    level: raid1
+    devices: 2
+    purpose: "OS / boot mirror"
+
+  - name: /dev/md1
+    level: raid0
+    devices: 8
+    purpose: "/scratch stripe"

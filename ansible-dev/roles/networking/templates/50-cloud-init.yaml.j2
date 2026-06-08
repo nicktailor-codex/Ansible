@@ -1,0 +1,49 @@
+network:
+  version: 2
+  ethernets:
+    ens4059f0np0:
+      addresses:
+        - "{{ network_primary_ip }}/24"
+      nameservers:
+        addresses:
+          - 10.83.40.11
+          - 10.22.16.15
+        search:
+          - insmed.local
+      routes:
+        - to: "10.174.16.0/24"
+          via: "0.0.0.0"
+          scope: link
+          table: 100
+        - to: "default"
+          via: "10.174.16.1"
+          table: 100
+        - to: "default"
+          via: "10.174.16.1"
+      routing-policy:
+        - from: "{{ network_primary_ip }}/32"
+          table: 100
+    ens4059f1np1:
+      addresses:
+        - "{{ network_secondary_ip }}/24"
+      nameservers:
+        addresses:
+          - 10.83.40.11
+          - 10.22.16.15
+        search:
+          - insmed.local
+      routes:
+        - to: "10.174.16.0/24"
+          via: "0.0.0.0"
+          scope: link
+          table: 101
+        - to: "default"
+          via: "10.174.16.1"
+          table: 101
+      routing-policy:
+        - from: "{{ network_secondary_ip }}/32"
+          table: 101
+        - to: "10.174.16.28/32"   # <-- NFS filer IP
+          table: 101
+        - to: "10.174.16.29/32"   # <-- NFS filer IP
+          table: 101

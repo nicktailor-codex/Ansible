@@ -1,0 +1,34 @@
+---
+# slurm handlers.
+#
+# slurm.conf changes need a slurmctld restart — `scontrol reconfigure`
+# alone doesn't pick up several keywords (AccountingStorageTRES, partition
+# AllowQos/Qos, etc.). Restart is brief; running jobs survive. Discovered
+# 2026-05-31 when partition QoS settings refused to load via reconfigure.
+#
+# gres.conf / cgroup.conf / plugstack.conf changes need a slurmd restart
+# on the affected node (Slurm only reads these at slurmd startup).
+
+- name: restart slurmctld
+  ansible.builtin.systemd:
+    name: slurmctld
+    state: restarted
+  delegate_to: "{{ slurm_controller_host }}"
+  run_once: true
+
+- name: restart slurmd
+  ansible.builtin.systemd:
+    name: slurmd
+    state: restarted
+
+- name: restart munge
+  ansible.builtin.systemd:
+    name: munge
+    state: restarted
+
+- name: restart slurmdbd
+  ansible.builtin.systemd:
+    name: slurmdbd
+    state: restarted
+  delegate_to: "{{ slurm_controller_host }}"
+  run_once: true

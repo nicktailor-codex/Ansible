@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# spack-build-burden — kick off the burden stack build in a detached
+# tmux session. Admin attaches with `tmux attach -t spack-build` to
+# watch progress, can detach with Ctrl-b d, reattach later. Build
+# survives SSH disconnects.
+
+set -euo pipefail
+
+SESSION=spack-build
+SPACK_ROOT=/software/spack
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "Session '$SESSION' already running."
+    echo "Attach with:   tmux attach -t $SESSION"
+    exit 1
+fi
+
+if [ ! -r "$SPACK_ROOT/share/spack/setup-env.sh" ]; then
+    echo "ERROR: $SPACK_ROOT not initialized. Run ansible-playbook playbooks/spack-lmod.yml first."
+    exit 1
+fi
+
+# Build inside the session; leave a shell open at the end so admin can
+# inspect spack errors / re-run commands without losing the session.
+# No `set -e` inside the tmux command — a failing step would kill the
+# session before `exec bash` runs, defeating the whole point of tmux.
+# If a step fails, subsequent steps still run (may emit confusing errors)
+# but the shell stays alive at the end for inspection.
+tmux new-session -d -s "$SESSION" \
+  "echo '=== sourcing spack ==='; \
+   . $SPACK_ROOT/share/spack/setup-env.sh; \
+   echo '=== registering system compilers ==='; \
+   spack compiler find; \
+   echo '=== activating burden env ==='; \
+   spack env activate burden; \
+   echo '=== concretizing ==='; \
+   spack concretize --reuse; \
+   echo '=== installing (this is the long bit) ==='; \
+   spack install; \
+   echo '=== refreshing Lmod modulefiles ==='; \
+   spack module lmod refresh --delete-tree -y; \
+   echo; echo '=== BUILD COMPLETE — module avail should now list the burden tools ==='; \
+   exec bash"
+
+echo "Build kicked off in tmux session: $SESSION"
+echo
+echo "Attach to watch:     tmux attach -t $SESSION"
+echo "Detach (inside):     Ctrl-b then d"
+echo "Check still alive:   tmux ls"
+echo "Reattach later:      tmux attach -t $SESSION"

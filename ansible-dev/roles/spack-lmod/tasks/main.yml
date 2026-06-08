@@ -1,0 +1,169 @@
+---
+# spack-lmod role — Phase 1 (infrastructure only).
+# Installs Lmod on every node + clones Spack to NetApp + drops profile.d.
+# The actual `spack install` of the burden stack is an out-of-band admin
+# task (multi-hour build) documented in roles/spack-lmod/README.md.
+
+# ── 1. Lmod on every node (provides the `module` command) ─────────────
+- name: Install Lmod (apt) on every node
+  ansible.builtin.apt:
+    name: "{{ spack_lmod_packages }}"
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+  tags: [spack-lmod, lmod]
+
+# ── 2. Spack build deps on cpu01 only (the build host) ─────────────────
+- name: Install Spack build dependencies on cpu01
+  ansible.builtin.apt:
+    name: "{{ spack_build_packages }}"
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+# ── 3. Clone Spack to /software/spack (NetApp shared) ─────────────────
+# Only one node needs to clone — every node sees /software/spack via NFS.
+- name: Ensure /software/spack parent exists with right permissions
+  ansible.builtin.file:
+    path: "{{ spack_root }}"
+    state: directory
+    owner: root
+    group: staff
+    mode: "0775"        # group-writable so admin in 'staff' can manage
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+- name: Clone Spack repo (pinned version)
+  ansible.builtin.git:
+    repo: "{{ spack_repo }}"
+    dest: "{{ spack_root }}"
+    version: "{{ spack_version }}"
+    depth: 1            # Shallow clone — saves ~500MB and minutes
+    force: no           # Don't auto-blow-away local edits
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+# Pre-create the standard Spack directory layout so config validation
+# doesn't fail when users (non-admins) run read-only spack commands like
+# `spack find`, `spack info`, `spack list`. Writes still gate on group
+# membership; reads work for everyone via 0775.
+- name: Spack runtime directories (install_tree, cache, environments)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: staff
+    mode: "0775"
+  loop:
+    - "{{ spack_root }}/opt"
+    - "{{ spack_root }}/opt/spack"
+    - "{{ spack_root }}/var"
+    - "{{ spack_root }}/var/spack"
+    - "{{ spack_root }}/var/spack/cache"
+    - "{{ spack_root }}/var/spack/environments"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+# ── 4. Spack site config (lives under spack_root, NFS-shared) ─────────
+- name: Spack etc/spack directory
+  ansible.builtin.file:
+    path: "{{ spack_root }}/etc/spack"
+    state: directory
+    owner: root
+    group: staff
+    mode: "0775"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+- name: Spack config.yaml (install paths, build jobs, etc.)
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ spack_root }}/etc/spack/config.yaml"
+    owner: root
+    group: staff
+    mode: "0664"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+- name: Spack modules.yaml (Lmod generation rules)
+  ansible.builtin.template:
+    src: modules.yaml.j2
+    dest: "{{ spack_root }}/etc/spack/modules.yaml"
+    owner: root
+    group: staff
+    mode: "0664"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+# ── Insmed package overlay repo ───────────────────────────────────────
+# Site-scoped repos.yaml: registers /software/spack/var/spack/repos/insmed
+# alongside the builtin repo. Survives Spack version bumps and is visible
+# to every user (not just root). Order in repos.yaml puts insmed first so
+# our subclassed packages (samtools, bcftools, gcta) override builtin.
+- name: Site-scoped repos.yaml (registers the insmed overlay repo)
+  ansible.builtin.copy:
+    src: repos.yaml
+    dest: "{{ spack_root }}/etc/spack/repos.yaml"
+    owner: root
+    group: staff
+    mode: "0664"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+# Deploy the insmed package overlay: regenie (new), samtools/bcftools/gcta
+# (subclasses of builtin that add new versions). Files copied recursively
+# so adding more packages later only needs a new dir under files/insmed-repo/.
+- name: Deploy insmed package overlay repo
+  ansible.builtin.copy:
+    src: insmed-repo/
+    dest: "{{ spack_root }}/var/spack/repos/insmed/"
+    owner: root
+    group: staff
+    mode: preserve
+    directory_mode: "0775"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+# ── 5. Drop the burden-stack environment spack.yaml ───────────────────
+- name: Spack 'burden' environment directory
+  ansible.builtin.file:
+    path: "{{ spack_root }}/var/spack/environments/burden"
+    state: directory
+    owner: root
+    group: staff
+    mode: "0775"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+- name: Drop pinned burden-stack spack.yaml
+  ansible.builtin.copy:
+    src: burden-stack.yaml
+    dest: "{{ spack_root }}/var/spack/environments/burden/spack.yaml"
+    owner: root
+    group: staff
+    mode: "0664"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]
+
+# ── 6. /etc/profile.d/spack.sh on every node ──────────────────────────
+- name: Drop /etc/profile.d/spack.sh on every node
+  ansible.builtin.copy:
+    src: spack-profile.sh
+    dest: /etc/profile.d/spack.sh
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [spack-lmod, profile]
+
+# ── 7. spack-build-burden helper (cpu01 only — that's where builds run) ─
+- name: spack-build-burden helper script on cpu01
+  ansible.builtin.copy:
+    src: spack-build-burden
+    dest: /usr/local/bin/spack-build-burden
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == slurm_controller
+  tags: [spack-lmod, spack]

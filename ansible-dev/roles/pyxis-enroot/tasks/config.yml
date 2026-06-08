@@ -1,0 +1,25 @@
+---
+# pyxis-enroot config push.
+# enroot.conf points ENROOT_CACHE_PATH at a NetApp-shared dir (one copy
+# of every `.sqsh` shared across all nodes); per-user runtime/data/temp
+# live on local /scratch for speed. All nodes carry the same enroot.conf.
+
+# The cache dir is on NetApp so the dir-ensure task runs idempotently
+# from every node — first one creates, others see it. Sticky perms
+# (1777) so any user can `enroot import`; sticky bit prevents users
+# from deleting each other's cached images.
+- name: Shared enroot cache directory exists on NetApp
+  ansible.builtin.file:
+    path: "{{ pyxis_enroot_cache_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ pyxis_enroot_cache_mode }}"
+
+- name: enroot.conf canonical
+  ansible.builtin.copy:
+    src: enroot.conf
+    dest: "{{ pyxis_enroot_conf }}"
+    owner: root
+    group: root
+    mode: "0644"

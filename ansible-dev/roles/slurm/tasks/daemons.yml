@@ -1,0 +1,80 @@
+---
+# slurm daemons — per-node daemon state.
+#
+# Controller (cpu01): slurmctld + slurmdbd + slurmd all active+enabled.
+# Compute nodes: slurmd active+enabled, slurmctld masked.
+#
+# Why mask slurmctld on compute? The `slurmctld` package gets pulled
+# in as a dependency of slurm-wlm so the binary is present, but it
+# has no config on compute → systemd reports it as `failed` (loud
+# noise in journal + sinfo can't tell what's "real"). Masking pins
+# it to a clean stopped state. The slurmdbd unit isn't installed on
+# compute so no masking needed.
+
+# ── Controller-only daemons ─────────────────────────────────
+
+# Drop-in to auto-restart slurmctld on crash. Real fix is the Slurm
+# version bump (kills the assoc_mgr deadlock bug in 23.11.x); this is
+# the cheap insurance until then.
+- name: slurmctld systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/slurmctld.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == slurm_controller_host
+
+- name: slurmctld Restart=on-failure drop-in
+  ansible.builtin.copy:
+    src: slurmctld.service.d-restart.conf
+    dest: /etc/systemd/system/slurmctld.service.d/restart.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == slurm_controller_host
+  register: slurmctld_restart_dropin
+  # daemon_reload happens inline on the next task via the register'd
+  # .changed flag — no handler needed.
+
+- name: slurmctld active on controller
+  ansible.builtin.systemd:
+    name: slurmctld
+    state: started
+    enabled: yes
+    daemon_reload: "{{ slurmctld_restart_dropin.changed | default(false) }}"
+  when: inventory_hostname == slurm_controller_host
+
+- name: slurmdbd active on controller
+  ansible.builtin.systemd:
+    name: slurmdbd
+    state: started
+    enabled: yes
+  when: inventory_hostname == slurm_controller_host
+
+# ── slurmd on every node ────────────────────────────────────
+- name: slurmd active + enabled on every node
+  ansible.builtin.systemd:
+    name: slurmd
+    state: started
+    enabled: yes
+
+# ── Mask slurmctld on compute (clears the failed state) ─────
+- name: slurmctld masked on compute (prevents systemd from retrying it)
+  ansible.builtin.systemd:
+    name: slurmctld
+    state: stopped
+    enabled: no
+    masked: yes
+  when: inventory_hostname != slurm_controller_host
+
+# `systemctl mask` blocks future starts but leaves any past failed
+# state record in place — `systemctl is-active` keeps reporting
+# "failed" until reset. Clear it explicitly.
+- name: Clear any failed-state record for slurmctld on compute
+  ansible.builtin.command:
+    cmd: systemctl reset-failed slurmctld
+  register: slurm_resetfailed
+  changed_when: false
+  failed_when: false
+  when: inventory_hostname != slurm_controller_host

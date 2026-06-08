@@ -1,0 +1,10 @@
+---
+# spack-lmod — install Lmod (every node) + Spack infrastructure (cpu01).
+# Does NOT trigger any spack package builds; that's an out-of-band admin
+# task documented in roles/spack-lmod/README.md.
+
+- name: spack-lmod — module system + Spack infrastructure
+  hosts: all
+  become: true
+  roles:
+    - spack-lmod

@@ -1,0 +1,14 @@
+---
+# storage.yml — apply the storage role to every cluster node.
+# Assumes `base` role has already been applied (nfs-common installed).
+#
+# Dry-run first:
+#   ansible-playbook playbooks/storage.yml --check --diff
+# Then for real:
+#   ansible-playbook playbooks/storage.yml
+
+- name: Apply storage role to all cluster nodes
+  hosts: all_cluster
+  gather_facts: yes
+  roles:
+    - storage

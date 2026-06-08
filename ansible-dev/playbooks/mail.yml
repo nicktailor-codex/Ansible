@@ -1,0 +1,6 @@
+---
+- name: Apply mail role to all cluster nodes
+  hosts: all_cluster
+  gather_facts: yes
+  roles:
+    - mail

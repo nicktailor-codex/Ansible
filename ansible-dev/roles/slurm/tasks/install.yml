@@ -1,0 +1,97 @@
+---
+# slurm install — fresh-node bootstrap. Tag-gated [install, never] —
+# never runs on default playbook invocation; only via:
+#   ansible-playbook playbooks/slurm.yml --tags install,slurm
+#
+# Phases:
+#   1. Install munge + slurm packages (+ MariaDB on controller)
+#   2. Create slurm spool/state/log directories
+#   3. (Controller only) MariaDB up + slurm_acct_db database + slurm user
+#      Password read from the vault'd slurmdbd.conf (single source of
+#      truth — slurmdbd reads the same file at runtime)
+#
+# Subsequent default-tag tasks pick up where install leaves off:
+#   secrets.yml  → deploys munge.key + slurmdbd.conf
+#   config.yml   → deploys slurm.conf + cgroup.conf + plugstack.conf + gres.conf
+#   prolog.yml   → deploys prolog/epilog scripts
+#   accounting.yml → creates accounts + QoSes via sacctmgr
+#   daemons.yml  → enables/starts daemons in correct order
+#   validate.yml → health-checks the new node
+
+# ── Phase 1: packages ───────────────────────────────────────
+- name: apt cache refresh
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install munge + slurm common packages (every node)
+  ansible.builtin.apt:
+    name:
+      - munge
+      - libmunge2
+      - slurm-client
+      - slurm-wlm
+    state: present
+
+- name: Install controller-only packages (slurmctld + slurmdbd + mariadb)
+  ansible.builtin.apt:
+    name:
+      - slurmctld
+      - slurmdbd
+      - mariadb-server
+      - mariadb-client
+      - python3-pymysql        # required by ansible.mysql.* modules
+    state: present
+  when: inventory_hostname == slurm_controller_host
+
+# ── Phase 2: spool / state / log dirs ───────────────────────
+- name: slurm spool / state / log directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: slurm
+    group: slurm
+    mode: "0755"
+  loop:
+    - /var/spool/slurmd
+    - /var/spool/slurmctld
+    - /var/log/slurm
+
+# ── Phase 3: MariaDB + slurm_acct_db (controller only) ──────
+# Pull the MySQL password from the vault'd slurmdbd.conf so install
+# and runtime config never drift. ansible-vault view runs on the
+# control node where ~/.ansible-vault-pass lives.
+# Pull the MySQL password from the vault'd slurmdbd.conf via the
+# unvault lookup plugin — that one honors ansible.cfg's
+# vault_password_file (the ansible-vault CLI does NOT).
+- name: Set slurm MySQL password fact from vault'd slurmdbd.conf
+  ansible.builtin.set_fact:
+    slurm_mysql_password: "{{ (lookup('ansible.builtin.unvault', role_path + '/files/slurmdbd.conf.vault') | regex_search('StoragePass=(\\S+)', '\\1') | first) }}"
+  no_log: true
+  run_once: true
+  when: inventory_hostname == slurm_controller_host
+
+- name: MariaDB active + enabled (controller)
+  ansible.builtin.systemd:
+    name: mariadb
+    state: started
+    enabled: yes
+  when: inventory_hostname == slurm_controller_host
+
+- name: slurm_acct_db database exists
+  ansible.mysql.mysql_db:
+    name: slurm_acct_db
+    state: present
+    login_unix_socket: /run/mysqld/mysqld.sock
+  when: inventory_hostname == slurm_controller_host
+
+- name: slurm MySQL user exists with grants on slurm_acct_db
+  ansible.mysql.mysql_user:
+    name: slurm
+    password: "{{ slurm_mysql_password }}"
+    priv: 'slurm_acct_db.*:ALL'
+    host: localhost
+    state: present
+    login_unix_socket: /run/mysqld/mysqld.sock
+  no_log: true
+  when: inventory_hostname == slurm_controller_host

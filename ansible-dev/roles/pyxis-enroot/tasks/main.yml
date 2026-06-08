@@ -1,0 +1,15 @@
+---
+# pyxis-enroot role — entry point.
+# v1 scope: codify current install. config + validate; install path is v2.
+# Tags:
+#   (default) — config + validate (idempotent against working node).
+#   config    — push enroot.conf only.
+#   validate  — assertions only (enroot version, pyxis plugin, packages).
+
+- name: Config — canonical enroot.conf
+  ansible.builtin.import_tasks: config.yml
+  tags: [pyxis-enroot, config]
+
+- name: Validate — enroot binary + pyxis plugin + packages
+  ansible.builtin.import_tasks: validate.yml
+  tags: [pyxis-enroot, validate]

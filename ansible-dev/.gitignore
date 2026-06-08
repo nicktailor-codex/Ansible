@@ -1,0 +1,20 @@
+# Ansible execution artifacts
+ansible.log
+*.retry
+.ansible/
+
+# Collections downloaded by ansible-galaxy — re-fetchable from
+# requirements; not source of truth.
+collections/
+
+# Vault password file lives at ~/.ansible-vault-pass — outside the
+# repo, so this entry is a belt-and-braces in case anyone moves it.
+.ansible-vault-pass
+*.vault-pass
+
+# Editor / OS noise
+*.swp
+*.swo
+.DS_Store
+__pycache__/
+*.py[co]

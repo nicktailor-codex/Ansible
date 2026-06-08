@@ -1,0 +1,43 @@
+---
+# team-volumes — set group ownership + setgid mode on shared NetApp
+# volumes from a declarative team_volumes list.
+
+# Safety net: fail loud if an AD group name doesn't resolve via SSSD/AD.
+# Better to fail at task 1 than silently chgrp to an unknown name and
+# end up with files that look valid but lock out the team.
+- name: Verify each AD group resolves via SSSD/AD
+  ansible.builtin.command: getent group {{ item.ad_group }}
+  changed_when: false
+  loop: "{{ team_volumes }}"
+  loop_control:
+    label: "{{ item.ad_group }}"
+  tags: [team-volumes]
+
+# Recursive group ownership — walks every file in the volume.
+# Slow on large volumes; expected to be slow on first run, fast on
+# subsequent runs (ansible only changes mismatched files).
+# Group only here; mode handled separately in the next task so we
+# don't accidentally setgid every regular file.
+- name: Set team volume group ownership (recursive)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    group: "{{ item.ad_group }}"
+    recurse: yes
+  loop: "{{ team_volumes }}"
+  loop_control:
+    label: "{{ item.path }} -> {{ item.ad_group }}"
+  tags: [team-volumes]
+
+# Setgid bit on the top-level dir only. New files created inside
+# inherit the AD group automatically (saves users from chgrp'ing
+# their own files). Existing file modes are left alone.
+- name: Set top-level mode (setgid for new-file group inheritance)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  loop: "{{ team_volumes }}"
+  loop_control:
+    label: "{{ item.path }} mode={{ item.mode }}"
+  tags: [team-volumes]

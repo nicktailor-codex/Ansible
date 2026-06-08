@@ -1,0 +1,97 @@
+---
+# slurm role — v1 entry point.
+# Imports tagged sub-task files so individual concerns can be run alone.
+#
+# Default run: config + validate (idempotent against working cluster).
+# Future: tasks/install.yml (--tags install), tasks/munge.yml (--tags munge),
+# tasks/accounting.yml (--tags accounting), tasks/daemons.yml (--tags daemons),
+# tasks/prolog-epilog.yml (--tags prolog).
+
+# Fresh-node bootstrap (--tags install, never). Runs BEFORE everything
+# else so packages, MariaDB, and the slurm user/dirs are in place
+# before secrets.yml / config.yml / etc. can land their artifacts.
+- name: Install — fresh-node packages + MariaDB + spool dirs
+  ansible.builtin.import_tasks: install.yml
+  tags: [install, never]
+
+- name: Config — push slurm.conf / cgroup.conf / plugstack.conf / gres.conf
+  ansible.builtin.import_tasks: config.yml
+  tags: [slurm, config]
+
+- name: Prolog/Epilog — per-job + per-user scratch dir scripts
+  ansible.builtin.import_tasks: prolog.yml
+  tags: [slurm, prolog]
+
+# Force config-change handlers (restart slurmctld + slurmd) to fire NOW
+# instead of at the end of the play. Otherwise, if validate.yml later
+# fails (e.g., a node is drained), Ansible aborts before handlers run
+# and the new slurm.conf never gets loaded by the daemons. Discovered
+# 2026-05-31 when a broken Prolog directive drained gpu02 and the fix
+# couldn't take effect because the handler chain was blocked.
+- name: Apply config-change handlers before continuing
+  ansible.builtin.meta: flush_handlers
+
+- name: Accounting — sacctmgr accounts + QoSes
+  ansible.builtin.import_tasks: accounting.yml
+  tags: [slurm, accounting]
+
+- name: Secrets — vault-managed munge key + slurmdbd.conf
+  ansible.builtin.import_tasks: secrets.yml
+  tags: [slurm, secrets]
+
+- name: Daemons — slurmctld/slurmdbd on controller, slurmd everywhere, mask slurmctld on compute
+  ansible.builtin.import_tasks: daemons.yml
+  tags: [slurm, daemons]
+
+- name: Validate — sinfo + daemon status
+  ansible.builtin.import_tasks: validate.yml
+  tags: [slurm, validate]
+
+# Small CLI helper — deploys to every node so users can run `cluster-status`
+# from any host to see free cores / mem / GPU across the cluster.
+- name: cluster-status helper installed to /usr/local/bin on every node
+  ansible.builtin.copy:
+    src: cluster-status
+    dest: /usr/local/bin/cluster-status
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [slurm, cluster-status]
+
+# jobinfo — pretty sacct/scontrol wrapper. Users run `jobinfo <jobid>` (or
+# `jobinfo last`) to get a one-screen summary of a job's state, timing,
+# resources, output files, and failure detail. Same fleet-wide deploy
+# pattern as cluster-status.
+- name: jobinfo helper installed to /usr/local/bin on every node
+  ansible.builtin.copy:
+    src: jobinfo
+    dest: /usr/local/bin/jobinfo
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [slurm, jobinfo]
+
+# purge-jobs — admin helper to delete slurmdbd job records by ID.
+# Backs up to /var/backups/ before deleting; dry-run by default.
+# Controller-only — slurmdbd's MySQL is on cpu01.
+- name: purge-jobs admin helper installed to /usr/local/bin on cpu01
+  ansible.builtin.copy:
+    src: purge-jobs
+    dest: /usr/local/bin/purge-jobs
+    owner: root
+    group: root
+    mode: "0750"      # readable+executable by root only (admin tool)
+  when: inventory_hostname == slurm_controller_host
+  tags: [slurm, purge-jobs]
+
+# slurm-allow — admin helper to add/remove/set partition AllowAccounts at
+# runtime. Wraps `scontrol update` with sacctmgr validation. Changes are
+# runtime-only; script prints a hint about persisting via the role.
+- name: slurm-allow admin helper installed to /usr/local/bin on every node
+  ansible.builtin.copy:
+    src: slurm-allow
+    dest: /usr/local/bin/slurm-allow
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [slurm, slurm-allow]

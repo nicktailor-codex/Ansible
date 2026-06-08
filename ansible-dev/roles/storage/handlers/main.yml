@@ -1,0 +1,6 @@
+---
+- name: clear nfsidmap cache
+  # Run when idmapd Domain changes — clears the kernel keyring cache so
+  # subsequent stat() calls map identity strings against the new domain.
+  ansible.builtin.command: nfsidmap -c
+  changed_when: false

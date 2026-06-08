@@ -1,0 +1,14 @@
+---
+# networking role defaults.
+# Per-host IPs come from inventory/host_vars/<host>.yml:
+#   network_primary_ip    — IP on ens4059f0np0 (default/general traffic, table 100)
+#   network_secondary_ip  — IP on ens4059f1np1 (NetApp traffic via PBR, table 101)
+#
+# Other values (gateway, DNS, NetApp IPs, routing tables, interface names)
+# are constants today and live inline in the template. Promote to vars
+# here if we ever have to vary them across nodes.
+
+# Path of the netplan config file on the nodes. Ubuntu 24.04 cloud-init
+# writes this filename; we manage the same file rather than fight over
+# multiple netplan yamls.
+networking_netplan_path: /etc/netplan/50-cloud-init.yaml

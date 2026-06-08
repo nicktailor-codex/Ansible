@@ -1,0 +1,18 @@
+---
+# slurm.yml — apply the slurm role to all cluster nodes.
+# v1 scope: config push + validate (no daemon/munge/install yet).
+#
+# Dry-run:
+#   ansible-playbook playbooks/slurm.yml --check --diff
+# Apply:
+#   ansible-playbook playbooks/slurm.yml
+#
+# Targeted runs:
+#   --tags config       # push configs only, no validation
+#   --tags validate     # health-check only, no config push
+
+- name: Apply slurm role to all cluster nodes
+  hosts: all_cluster
+  gather_facts: yes
+  roles:
+    - slurm

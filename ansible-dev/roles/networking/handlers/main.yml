@@ -1,0 +1,14 @@
+---
+# Validate the netplan first (catches typos / bad structure WITHOUT
+# touching the live network). Only if generate succeeds do we apply.
+# A wrong netplan that gets applied can leave the node unreachable.
+
+- name: netplan generate
+  ansible.builtin.command:
+    cmd: netplan generate
+  listen: netplan apply
+
+- name: netplan apply
+  ansible.builtin.command:
+    cmd: netplan apply
+  listen: netplan apply

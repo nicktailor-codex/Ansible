@@ -1,0 +1,69 @@
+---
+# storage role — NFS mounts, idmapd, local scratch baseline.
+# Depends on `base` role (nfs-common installed). Run order: base → storage.
+
+# ── Mount points ──
+# For NetApp volumes that are already mounted, this also asserts perms on
+# the live mount (the file module follows into the mounted FS). Team
+# volumes (/mnt/compchem, /mnt/humgen, /mnt/informatics) get
+# root:'domain users' + 2770 so AD users in `domain users` have access;
+# others (default) get root:root + 0755.
+- name: NFS mount point directories exist (perms enforced on live mount)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode:  "{{ item.mode  | default('0755') }}"
+  loop: "{{ storage_nfs_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  # Skip entries flagged manage_perms:false — those are managed by
+  # another role (e.g. team-volumes for /mnt/<team>). Without this
+  # guard the default root:root:0755 fallback overwrites their work.
+  when: item.manage_perms | default(true)
+  tags: [storage, nfs]
+
+# Bare mount-point dirs (state-only) for entries that opted out of
+# perm management above. We still need the dir to exist before
+# ansible.posix.mount tries to mount onto it.
+- name: NFS mount point directories exist (no perm management)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+  loop: "{{ storage_nfs_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  when: not (item.manage_perms | default(true))
+  tags: [storage, nfs]
+
+# ── NetApp NFSv4 mounts (manages fstab + active mount state in one shot) ──
+- name: NetApp NFSv4 volumes mounted (and fstab updated)
+  ansible.posix.mount:
+    src: "{{ item.src }}"
+    path: "{{ item.path }}"
+    fstype: nfs
+    opts: "{{ storage_nfs_opts }}"
+    state: mounted
+  loop: "{{ storage_nfs_mounts }}"
+  loop_control:
+    label: "{{ item.path }}"
+  tags: [storage, nfs]
+
+# ── NFSv4 ID mapping ──
+- name: idmapd Domain matches AD realm
+  ansible.builtin.lineinfile:
+    path: /etc/idmapd.conf
+    regexp: '^#?\s*Domain\s*='
+    line: "Domain = {{ storage_idmapd_domain }}"
+    insertafter: '^\[General\]'
+    backup: yes
+  notify: clear nfsidmap cache
+  tags: [storage, idmapd]
+
+# /scratch/cluster-software was the pre-NetApp bootstrap area for enroot
+# cache + container catalog. Replaced by /software/containers/ (NetApp,
+# managed elsewhere) and per-user /scratch/$USER/enroot/ (Slurm prolog
+# territory). Dropped from this role since nothing references it.
+# Leftover dirs on individual nodes can be cleaned up manually:
+#   sudo rm -rf /scratch/cluster-software

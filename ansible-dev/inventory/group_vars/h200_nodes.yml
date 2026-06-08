@@ -1,0 +1,3 @@
+---
+# h200_nodes group — insiiukgpu01, insiiukgpu02 (NVIDIA H200 NVL)
+slurm_gpu_type: h200_nvl

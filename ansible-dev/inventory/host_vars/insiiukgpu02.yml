@@ -1,0 +1,4 @@
+---
+network_primary_ip: 10.174.16.58
+network_secondary_ip: 10.174.16.63
+mail_sender_node: gpu02

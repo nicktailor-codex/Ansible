@@ -1,0 +1,12 @@
+---
+# nvidia handlers.
+
+# Notified by the nouveau blacklist file change. Rebuilds initramfs so
+# the blacklist takes effect on the next boot. Reboot itself is an
+# explicit task in install.yml gated on this change too — handler runs
+# at the end of the play by default, so we use meta: flush_handlers
+# before the reboot task to ensure initramfs is rebuilt first.
+- name: update initramfs
+  ansible.builtin.command:
+    cmd: update-initramfs -u
+  listen: update initramfs

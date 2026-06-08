@@ -1,0 +1,40 @@
+---
+# Cluster-wide variables — values that hold true on every node.
+
+# Identity / AD
+ad_domain:        insmed.local
+ad_realm:         INSMED.LOCAL
+
+# Storage
+netapp_server:    10.174.16.28
+netapp_server_ha: 10.174.16.29
+nfs_mount_opts:   "vers=4.2,proto=tcp,rsize=1048576,wsize=1048576,hard,nconnect=16,noatime,_netdev"
+
+# Slurm
+slurm_cluster_name: research-cluster
+slurm_controller:   insiiukcpu01
+
+# Pyxis + Enroot
+enroot_version:    "3.5.0"
+pyxis_version:     "v0.20.0"
+container_catalog: /software/containers
+
+# Mail — Microsoft 365 / Exchange Online Protection endpoint for the
+# Insmed tenant. Cluster nodes need their IPs allowlisted in the O365
+# inbound connector for relay to succeed (IT-side, verify before relying
+# on cluster mail in production). Per-host sender local-part comes from
+# host_vars (mail_sender_node).
+mail_relay_host:   insmedinc.mail.protection.outlook.com
+mail_relay_port:   25
+mail_domain:       insmed.com
+
+# Team volume → AD group mapping. Consumed by the team-volumes role.
+# Adding a new team:
+#   1. Get the AD group name from IT (pattern: HPC-<TeamName>)
+#   2. Add a line below
+#   3. `ansible-playbook playbooks/team-volumes.yml`
+# Role verifies the AD group resolves via SSSD before touching anything.
+team_volumes:
+  - { ad_group: hpc_compchem,    path: /mnt/compchem,    mode: "2770" }
+  - { ad_group: hpc_humgent,     path: /mnt/humgen,      mode: "2770" }
+  - { ad_group: hpc_informatics, path: /mnt/informatics, mode: "2770" }

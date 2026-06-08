@@ -1,0 +1,301 @@
+---
+# monitoring role — slurm-web via rackslab's apt repo.
+# Runs on cpu01 (controller) only. Compute nodes need nothing.
+
+- name: Download rackslab signing key (ASCII-armored)
+  ansible.builtin.get_url:
+    url: "{{ monitoring_rackslab_key_url }}"
+    dest: /tmp/rackslab-keyring.asc
+    mode: "0644"
+  when: inventory_hostname == slurm_controller
+
+- name: Dearmor rackslab key into apt keyring (binary .gpg)
+  ansible.builtin.shell:
+    cmd: gpg --dearmor < /tmp/rackslab-keyring.asc > {{ monitoring_rackslab_keyring }}
+    creates: "{{ monitoring_rackslab_keyring }}"
+  when: inventory_hostname == slurm_controller
+
+- name: rackslab apt source list
+  ansible.builtin.copy:
+    content: "deb [signed-by={{ monitoring_rackslab_keyring }}] {{ monitoring_rackslab_repo_url }} {{ monitoring_rackslab_release }} {{ monitoring_rackslab_components }}\n"
+    dest: /etc/apt/sources.list.d/rackslab.list
+    owner: root
+    group: root
+    mode: "0644"
+  register: monitoring_rackslab_list
+  when: inventory_hostname == slurm_controller
+
+- name: apt cache refresh after adding rackslab repo
+  ansible.builtin.apt:
+    update_cache: yes
+    cache_valid_time: 600
+  when: inventory_hostname == slurm_controller
+
+- name: Install slurmrestd + slurm-web
+  ansible.builtin.apt:
+    name: "{{ monitoring_packages }}"
+    state: present
+  when: inventory_hostname == slurm_controller
+
+# JWT signing key for the gateway. The .deb doesn't pre-generate this.
+- name: /var/lib/slurm-web parent dir exists (group=slurm so agent can traverse)
+  ansible.builtin.file:
+    path: /var/lib/slurm-web
+    state: directory
+    owner: slurm-web
+    group: slurm
+    mode: "0750"
+  when: inventory_hostname == slurm_controller
+
+- name: Generate gateway JWT signing key (only if missing)
+  ansible.builtin.shell:
+    cmd: openssl rand -base64 64 > /var/lib/slurm-web/jwt.key
+    creates: /var/lib/slurm-web/jwt.key
+  when: inventory_hostname == slurm_controller
+
+# Owned slurm-web:slurm with mode 0440 so both slurm-web (gateway) and
+# slurm (agent — runs as slurm via the User= drop-in) can read it.
+- name: jwt.key perms (slurm group-readable)
+  ansible.builtin.file:
+    path: /var/lib/slurm-web/jwt.key
+    owner: slurm-web
+    group: slurm
+    mode: "0440"
+  when: inventory_hostname == slurm_controller
+
+# ── slurmrestd systemd unit (replaces Ubuntu's default which doesn't
+# expose a Unix socket out of the box) ──
+- name: slurmrestd systemd unit
+  ansible.builtin.copy:
+    src: slurmrestd.service
+    dest: /etc/systemd/system/slurmrestd.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == slurm_controller
+  notify:
+    - reload systemd
+    - restart slurmrestd
+
+# ── slurm-web configs ──
+- name: slurm-web agent.ini
+  ansible.builtin.template:
+    src: agent.ini.j2
+    dest: /etc/slurm-web/agent.ini
+    owner: slurm-web
+    # group=slurm (not slurm-web) so the agent — which runs as the slurm
+    # user via the systemd drop-in below — can read it.
+    group: slurm
+    mode: "0640"
+  when: inventory_hostname == slurm_controller
+  notify: restart slurm-web-agent
+
+- name: slurm-web gateway.ini
+  ansible.builtin.template:
+    src: gateway.ini.j2
+    dest: /etc/slurm-web/gateway.ini
+    owner: slurm-web
+    group: slurm-web
+    mode: "0640"
+  when: inventory_hostname == slurm_controller
+  notify: restart slurm-web-gateway
+
+# RBAC policy — anonymous role gets full read since gateway auth is off.
+- name: slurm-web policy.ini
+  ansible.builtin.copy:
+    src: policy.ini
+    dest: /etc/slurm-web/policy.ini
+    owner: slurm-web
+    group: slurm
+    mode: "0640"
+  when: inventory_hostname == slurm_controller
+  notify: restart slurm-web-agent
+
+# slurmrestd's auth=local uses Unix socket peercred — connecting
+# process must share UID with the slurm user. Override the .deb's
+# default `User=slurm-web` via a systemd drop-in. Also make the
+# slurm-web user a member of the slurm group so it can read configs.
+- name: slurm-web user is in the slurm group
+  ansible.builtin.user:
+    name: slurm-web
+    groups: slurm
+    append: yes
+  when: inventory_hostname == slurm_controller
+
+- name: systemd drop-in dir for slurm-web-agent override
+  ansible.builtin.file:
+    path: /etc/systemd/system/slurm-web-agent.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == slurm_controller
+
+- name: "Drop-in — run slurm-web-agent as the slurm user (peercred match)"
+  ansible.builtin.copy:
+    src: slurm-web-agent.service.d-override.conf
+    dest: /etc/systemd/system/slurm-web-agent.service.d/override.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == slurm_controller
+  notify:
+    - reload systemd
+    - restart slurm-web-agent
+
+# Slurm 23.11's slurmrestd v0.0.39 returns the ping meta block with
+# the cluster info under the capital-S key `Slurm`. slurm-web v4
+# reads lowercase `slurm` (Slurm 24.x renamed it in v0.0.41). The
+# /stats endpoint is the only caller — without this patch the
+# dashboard landing page 500s while every other view works.
+# Drop this task and bump the rackslab component when Slurm goes
+# to 24.05+.
+- name: "Patch slurm-web version() for Slurm 23.11 ping schema"
+  ansible.builtin.replace:
+    path: /usr/lib/python3/dist-packages/slurmweb/slurmrestd/__init__.py
+    regexp: '    def version\(self, \*\*kwargs\):\n        return self\._request\(f"/slurm/v\{self\.api_version\}/ping", "meta", \*\*kwargs\)\[\n            "slurm"\n        \]'
+    replace: |2-
+          def version(self, **kwargs):
+              # ANSIBLE-PATCH (monitoring role): 0.0.39 returns meta.Slurm
+              # (capital S). 0.0.41+ uses lowercase. Fall back so we work on both.
+              _meta = self._request(f"/slurm/v{self.api_version}/ping", "meta", **kwargs)
+              return _meta.get("slurm") or _meta["Slurm"]
+  when: inventory_hostname == slurm_controller
+  notify: restart slurm-web-agent
+
+# slurm-web v4's /jobs endpoint only returns live jobs from slurmctld
+# (PENDING/RUNNING). Historical completion records live in slurmdbd and
+# would only be queryable per-id via /jobs/<id>. Patch the agent's jobs()
+# view to also merge sacct output from the last 7 days, de-duped by
+# job_id (live entries win). The UI's Jobs view then shows both live and
+# recent history together. Drop this patch when we move to slurm-web v5/v6
+# (native history support) — only kept this long because Slurm 23.11
+# pins us to v4.
+- name: Patch slurm-web jobs() to merge sacct history
+  ansible.builtin.copy:
+    src: apply-history-patch.py
+    dest: /usr/local/lib/apply-history-patch.py
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == slurm_controller
+  register: history_patch_script
+  tags: [monitoring, history]
+
+- name: Apply the history patch (idempotent — sentinel check inside)
+  ansible.builtin.command:
+    cmd: python3 /usr/local/lib/apply-history-patch.py
+  register: history_patch_apply
+  changed_when: "'patched:' in history_patch_apply.stdout and 'already' not in history_patch_apply.stdout"
+  when: inventory_hostname == slurm_controller
+  notify: restart slurm-web-agent
+  tags: [monitoring, history]
+
+- ansible.builtin.meta: flush_handlers
+
+# ── Daemons enabled + started ──
+- name: slurmrestd active + enabled
+  ansible.builtin.systemd:
+    name: slurmrestd
+    state: started
+    enabled: yes
+  when: inventory_hostname == slurm_controller
+
+- name: slurm-web-agent active + enabled
+  ansible.builtin.systemd:
+    name: slurm-web-agent
+    state: started
+    enabled: yes
+  when: inventory_hostname == slurm_controller
+
+- name: slurm-web-gateway active + enabled
+  ansible.builtin.systemd:
+    name: slurm-web-gateway
+    state: started
+    enabled: yes
+  when: inventory_hostname == slurm_controller
+
+# ── Pin slurm-web to v4 — apt-mark hold + unattended-upgrades blacklist ──
+# Same two-layer pattern as the nvidia driver. We're locked to slurmweb-4
+# because v5/v6 require Slurm 24.x. An auto-upgrade would silently break
+# the cluster's monitoring and revert any vendor-code patches we apply
+# (e.g. the meta.Slurm fix above). Hold prevents both.
+#
+# Deliberate upgrade path (post-Slurm-bump):
+#   sudo apt-mark unhold slurm-web-agent slurm-web-gateway
+#   sudo apt upgrade slurm-web-agent slurm-web-gateway
+#   # then re-apply the role to restore configs and re-hold
+- name: Hold slurm-web packages (apt-mark hold)
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - slurm-web-agent
+    - slurm-web-gateway
+  when: inventory_hostname == slurm_controller
+  tags: [monitoring, apt-hold]
+
+- name: Blacklist slurm-web from unattended-upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52-slurm-web-blacklist
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      // Pin slurm-web to v4. v5/v6 require Slurm 24.x; until the cluster-wide
+      // Slurm upgrade lands, an auto-upgrade would break monitoring and
+      // revert our vendor-code patches (see meta.Slurm fix in slurm-web role).
+      // Deliberate update: `apt-mark unhold slurm-web-agent slurm-web-gateway`
+      // then re-apply the monitoring role.
+      Unattended-Upgrade::Package-Blacklist {
+          "slurm-web-";
+      };
+  when: inventory_hostname == slurm_controller
+  tags: [monitoring, apt-hold]
+
+# ── sacctweb ───────────────────────────────────────────────────────────
+# Small Flask app at port 5013 that wraps sacct with search/filter/pagination —
+# fills the gap left by slurm-web v4's lack of a history view. Runs as the
+# slurm user (no root needed; sacct reads accounting via slurmdbd).
+# cpu01-only since slurmdbd lives there.
+
+- name: sacctweb runtime dir
+  ansible.builtin.file:
+    path: /opt/sacctweb
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == slurm_controller
+  tags: [monitoring, sacctweb]
+
+- name: sacctweb python app
+  ansible.builtin.copy:
+    src: sacctweb.py
+    dest: /opt/sacctweb/sacctweb.py
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == slurm_controller
+  notify: restart sacctweb
+  tags: [monitoring, sacctweb]
+
+- name: sacctweb systemd unit
+  ansible.builtin.copy:
+    src: sacctweb.service
+    dest: /etc/systemd/system/sacctweb.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == slurm_controller
+  register: sacctweb_unit
+  tags: [monitoring, sacctweb]
+
+- name: sacctweb service active + enabled
+  ansible.builtin.systemd:
+    name: sacctweb
+    state: started
+    enabled: yes
+    daemon_reload: "{{ sacctweb_unit.changed | default(false) }}"
+  when: inventory_hostname == slurm_controller
+  tags: [monitoring, sacctweb]
