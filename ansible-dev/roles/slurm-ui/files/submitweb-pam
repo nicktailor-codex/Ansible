@@ -1,0 +1,10 @@
+#%PAM-1.0
+# /etc/pam.d/submitweb — PAM service used by Apache's mod_authnz_pam to
+# authenticate AD users via SSSD. Two stages:
+#   auth     — verify the password is correct (delegates to SSSD → AD)
+#   account  — verify the account is in good standing (not locked/expired)
+# We do NOT add a session stage — Apache isn't opening a login session,
+# just validating credentials per-request.
+
+auth     required pam_sss.so
+account  required pam_sss.so

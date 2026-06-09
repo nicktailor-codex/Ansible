@@ -86,3 +86,77 @@
 # territory). Dropped from this role since nothing references it.
 # Leftover dirs on individual nodes can be cleaned up manually:
 #   sudo rm -rf /scratch/cluster-software
+
+# ── /software/* shared workspace posture ────────────────────────────
+# Codifies the runtime perm fix applied 2026-06-09: every workspace dir
+# under /software/ gets group=domain users + setgid (so new files inherit
+# the group), and existing files get their group reset + g+rw so AD users
+# can write within shared workspaces (oligoai, cluster-build, containers).
+#
+# /software/spack and /software/enroot-cache are handled separately:
+#   - spack: admin-only writes — chgrp here, mode unchanged
+#   - enroot-cache: pyxis-enroot role owns it (stricter 3770 posture)
+#
+# Cluster-controller-only because /software is NetApp-shared — every node
+# sees the same FS, so we only need to run on cpu01.
+- name: Software workspaces — top-level dir (group=domain users, setgid 2775)
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    group: "domain users"
+    mode: "2775"
+  loop: "{{ storage_software_workspaces }}"
+  when: inventory_hostname == slurm_controller
+  tags: [storage, software-perms]
+
+# All recursion done via find — only touches entries that drift, much
+# faster than `file: recurse: yes` on large trees (e.g. spack: 95k files).
+- name: Software workspaces — chgrp drift to 'domain users' (recursive via find)
+  ansible.builtin.command:
+    cmd: "find {{ item }} ! -group 'domain users' -print -exec chgrp 'domain users' {} +"
+  register: _sw_chgrp
+  changed_when: _sw_chgrp.stdout != ""
+  loop: "{{ storage_software_workspaces }}"
+  when: inventory_hostname == slurm_controller
+  tags: [storage, software-perms]
+
+- name: Software workspaces — dirs get setgid 2775 (recursive via find)
+  ansible.builtin.command:
+    cmd: "find {{ item }} -type d ! -perm -2775 -print -exec chmod 2775 {} +"
+  register: _sw_dir_chmod
+  changed_when: _sw_dir_chmod.stdout != ""
+  loop: "{{ storage_software_workspaces }}"
+  when: inventory_hostname == slurm_controller
+  tags: [storage, software-perms]
+
+- name: Software workspaces — files get g+rw (recursive via find)
+  ansible.builtin.command:
+    cmd: "find {{ item }} -type f ! -perm -060 -print -exec chmod g+rw {} +"
+  register: _sw_file_chmod
+  changed_when: _sw_file_chmod.stdout != ""
+  loop: "{{ storage_software_workspaces }}"
+  when: inventory_hostname == slurm_controller
+  tags: [storage, software-perms]
+
+# ── /software/spack — admin-only writes; only change group ──────────
+# Mode stays 0775 (root rwx, group rx, other rx). AD users in
+# 'domain users' read the Spack tree via the group bit (and via other
+# rx). All writes go through `sudo` per project-memory.
+- name: Software admin dirs (spack) — top-level group + mode
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    group: "domain users"
+    mode: "0775"
+  loop: "{{ storage_software_admin_dirs }}"
+  when: inventory_hostname == slurm_controller
+  tags: [storage, software-perms]
+
+- name: Software admin dirs — chgrp drift to 'domain users' (recursive via find)
+  ansible.builtin.command:
+    cmd: "find {{ item }} ! -group 'domain users' -print -exec chgrp 'domain users' {} +"
+  register: _sw_admin_chgrp
+  changed_when: _sw_admin_chgrp.stdout != ""
+  loop: "{{ storage_software_admin_dirs }}"
+  when: inventory_hostname == slurm_controller
+  tags: [storage, software-perms]

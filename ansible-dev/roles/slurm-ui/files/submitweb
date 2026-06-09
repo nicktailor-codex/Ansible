@@ -1,0 +1,326 @@
+#!/usr/bin/env python3
+"""submitweb — minimal Slurm job-submission web UI for the Insmed cluster.
+
+User flow:
+  1. Browser → Apache vhost on cpu01:80 /submit/
+  2. Apache mod_authnz_pam authenticates against AD via SSSD
+  3. On success, Apache reverse-proxies to localhost:5014 with REMOTE_USER set
+  4. This Flask app:
+       - reads REMOTE_USER from the X-Remote-User header
+       - checks membership in one of {hpc_compchem, hpc_humgent, hpc_informatics}
+       - renders a textarea + log window
+       - on submit: writes user's pasted script to /home/<user>/submitweb/<ts>.sh,
+         shells out to /usr/local/sbin/submit-as-user (sudo wrapper) → sbatch as user
+       - polls /tail/<jobid> for incremental log output
+
+Lives at /usr/local/bin/submitweb. Run via systemd as the slurm user (so
+when it shells out via sudo, the trust boundary is well-defined).
+"""
+
+import grp
+import os
+import pwd
+import re
+import subprocess
+import time
+from pathlib import Path
+
+from flask import Flask, abort, jsonify, render_template_string, request
+
+ALLOWED_GROUPS = {"hpc_compchem", "hpc_humgent", "hpc_informatics"}
+SUBMIT_WRAPPER = "/usr/local/sbin/submit-as-user"
+PORT = 5014
+
+app = Flask(__name__)
+
+
+def remote_user() -> str:
+    """Trust Apache. mod_authnz_pam sets REMOTE_USER via the env / proxy header.
+
+    Apache vhost is configured with `RequestHeader set X-Remote-User %{REMOTE_USER}s`
+    so this works behind ProxyPass.
+    """
+    u = request.headers.get("X-Remote-User") or request.environ.get("REMOTE_USER")
+    if not u:
+        abort(401, "no REMOTE_USER — Apache auth not configured correctly")
+    # AD usernames are firstname.lastname; defensive against injection
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", u):
+        abort(400, f"refusing suspicious username: {u!r}")
+    return u.lower()
+
+
+def user_groups(user: str) -> set[str]:
+    """All groups (primary + supplementary) for a user, via NSS (SSSD-backed).
+
+    Uses os.getgrouplist() — a per-user NSS query — instead of grp.getgrall(),
+    because SSSD ships with enumerate=false by default. getgrall() only
+    returns locally-cached groups (not the full AD group list), which means
+    AD groups like hpc_humgent are invisible to it. getgrouplist() asks SSSD
+    'what groups is this user in?', which it answers correctly.
+    """
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        abort(403, f"user {user!r} not resolvable via NSS")
+    gids = os.getgrouplist(user, pw.pw_gid)
+    out = set()
+    for g in gids:
+        try:
+            out.add(grp.getgrgid(g).gr_name)
+        except KeyError:
+            pass  # GID with no resolvable name — skip silently
+    return out
+
+
+def require_authorized() -> str:
+    user = remote_user()
+    if not (user_groups(user) & ALLOWED_GROUPS):
+        abort(403, f"user {user!r} is not in any of {sorted(ALLOWED_GROUPS)}")
+    return user
+
+
+def user_submit_dir(user: str) -> Path:
+    return Path(f"/home/{user}/submitweb")
+
+
+PAGE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>submitweb</title>
+<style>
+  body { font-family: monospace; max-width: 1100px; margin: 1em auto; padding: 0 1em; background: #f6f6f6; }
+  h1 { font-size: 1.2em; margin: 0 0 0.5em 0; }
+  .meta { color: #555; font-size: 0.9em; margin-bottom: 1em; }
+  textarea { width: 100%; box-sizing: border-box; font-family: monospace; font-size: 0.85em; }
+  #script { height: 350px; }
+  #log { height: 350px; background: #1e1e1e; color: #e0e0e0; padding: 0.5em; white-space: pre-wrap; overflow-y: auto; }
+  button { padding: 0.4em 1.2em; font-size: 1em; cursor: pointer; }
+  .status { margin: 0.5em 0; padding: 0.5em; background: #fff; border-left: 4px solid #888; }
+  .status.ok    { border-left-color: #2a7; }
+  .status.err   { border-left-color: #c33; color: #c33; }
+</style></head><body>
+<h1>submitweb — Insmed cluster job submission</h1>
+<div class="meta">
+  Logged in as: <strong>{{ user }}</strong> &nbsp;|&nbsp;
+  Groups (allowed): {{ allowed_groups | sort | join(", ") }} &nbsp;|&nbsp;
+  Live status: <a href="http://10.174.16.55:5011/" target="_blank">slurm-web</a> ·
+  <a href="http://10.174.16.55:5013/" target="_blank">sacctweb</a>
+</div>
+
+<form id="form">
+  <label for="script">Paste your sbatch script — include the #SBATCH directives at the top:</label>
+  <textarea id="script" name="script" required spellcheck="false">#!/bin/bash
+#SBATCH -J my-job
+#SBATCH -A informatics
+#SBATCH -p cpu
+#SBATCH -c 4
+#SBATCH --mem=8G
+#SBATCH -t 1:00:00
+#SBATCH -o /home/{{ user }}/submitweb/%j.out
+# Tip: use /scratch/{{ user }}/<dir>/ for fast per-node NVMe IO. /scratch is local
+# to the node the job runs on. Don't put long-term data there — it's not backed up
+# and isn't visible from other nodes. Copy results out to /home or /mnt/<team>
+# at the end of the job if you want them to survive.
+
+echo "host:    $(hostname)"
+echo "jobid:   $SLURM_JOB_ID"
+echo "scratch: /scratch/{{ user }}"
+# your work here, e.g.:
+# cd /scratch/{{ user }} && ./fast-thing && cp results.csv /home/{{ user }}/
+</textarea>
+  <div style="margin: 0.5em 0;">
+    <button type="submit">Submit ▶</button>
+  </div>
+</form>
+
+<div id="result"></div>
+<div style="margin-top: 1em;"><strong>Live log:</strong></div>
+<div id="log">(no job yet — submit one above)</div>
+
+<script>
+let pollHandle = null;
+let currentJobId = null;
+let finalShown = false;          // guard so we only emit the "Final state" banner once
+const $log = document.getElementById('log');
+const $result = document.getElementById('result');
+
+// fetch URLs are RELATIVE — the app is mounted at /submit/ by Apache.
+// 'submit' resolves to /submit/submit (Apache strips the prefix → backend /submit).
+// 'tail/123' resolves to /submit/tail/123 → backend /tail/123. Absolute paths
+// like '/submit' would hit Apache at bare /submit (no trailing slash) and
+// not match the Location block — 404.
+
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $result.innerHTML = '<div class="status">Submitting…</div>';
+  let r, data;
+  try {
+    r = await fetch('submit', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: new URLSearchParams(new FormData(e.target))
+    });
+    data = await r.json();
+  } catch (err) {
+    $result.innerHTML = '<div class="status err">network or parse error: '+err+'</div>';
+    return;
+  }
+  if (!r.ok || data.error) {
+    $result.innerHTML = '<div class="status err">'+(data.error||('submit failed (HTTP '+r.status+')'))+'</div>';
+    return;
+  }
+  $result.innerHTML = '<div class="status ok">Job '+data.jobid+' submitted. Tailing '+data.logfile+'</div>';
+  currentJobId = data.jobid;
+  finalShown = false;            // reset for the new job
+  $log.textContent = '(waiting for log file…)';
+  if (pollHandle) clearInterval(pollHandle);
+  pollHandle = setInterval(() => tail(currentJobId), 2000);
+  tail(currentJobId);
+});
+
+async function tail(jid) {
+  let r, data;
+  try {
+    r = await fetch('tail/'+jid);
+    data = await r.json();
+  } catch (err) {
+    $log.textContent = '(error polling log: '+err+')';
+    return;
+  }
+  if (data.log !== undefined) {
+    $log.textContent = data.log || '(log file empty so far)';
+    $log.scrollTop = $log.scrollHeight;
+  }
+  if (data.state && /COMPLETED|FAILED|TIMEOUT|CANCELLED|NODE_FAIL/.test(data.state)) {
+    clearInterval(pollHandle);
+    pollHandle = null;
+    if (!finalShown) {
+      finalShown = true;
+      $result.insertAdjacentHTML('beforeend',
+        '<div class="status '+(data.state==='COMPLETED'?'ok':'err')+'">Final state: '+data.state+'</div>');
+    }
+  }
+}
+</script>
+</body></html>
+"""
+
+
+@app.route("/")
+def index():
+    user = require_authorized()
+    return render_template_string(PAGE, user=user, allowed_groups=ALLOWED_GROUPS)
+
+
+@app.route("/submit", methods=["POST"])
+def submit():
+    user = require_authorized()
+    script = request.form.get("script", "").strip()
+    if not script:
+        return jsonify(error="empty script"), 400
+    if not script.startswith("#!"):
+        script = "#!/bin/bash\n" + script
+
+    # Per-user submit dir. Wrapper enforces this path; if missing it creates it.
+    sdir = user_submit_dir(user)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    script_path = sdir / f"{ts}.sh"
+
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", SUBMIT_WRAPPER, "submit", user, str(script_path)],
+            input=script,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return jsonify(error="wrapper timed out"), 500
+
+    if result.returncode != 0:
+        return jsonify(error=(result.stderr or result.stdout or "wrapper failed").strip()), 500
+
+    # wrapper prints "Submitted batch job N"; pull the id out
+    m = re.search(r"Submitted batch job (\d+)", result.stdout)
+    if not m:
+        return jsonify(error=f"unexpected wrapper output: {result.stdout!r}"), 500
+    jobid = int(m.group(1))
+
+    # Ask scontrol where the job's StdOut actually lands — respects whatever
+    # -o the user put in their script. Fall back to the submitweb default
+    # path if scontrol doesn't know (rare; would mean the job already finished
+    # before this call returned).
+    logfile = f"/home/{user}/submitweb/{jobid}.out"
+    try:
+        sc = subprocess.run(
+            ["scontrol", "show", "job", str(jobid), "--oneliner"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if sc.returncode == 0:
+            for tok in sc.stdout.split():
+                if tok.startswith("StdOut="):
+                    logfile = tok[len("StdOut="):]
+                    break
+    except Exception:
+        pass
+
+    return jsonify(jobid=jobid, logfile=logfile)
+
+
+@app.route("/tail/<int:jobid>")
+def tail(jobid):
+    user = require_authorized()
+
+    # Ask Slurm where the job's StdOut actually lives — the user's #SBATCH -o
+    # might point anywhere under their home. Fall back to the submitweb dir
+    # default if we can't get it.
+    logpath = ""
+    try:
+        r = subprocess.run(
+            ["scontrol", "show", "job", str(jobid), "--oneliner"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            for tok in r.stdout.split():
+                if tok.startswith("StdOut="):
+                    logpath = tok[len("StdOut="):]
+                    break
+    except Exception:
+        pass
+    if not logpath:
+        logpath = str(user_submit_dir(user) / f"{jobid}.out")
+
+    # Call the wrapper in tail mode — it sudos to the user before reading.
+    # Flask itself runs as `slurm` and can't traverse 0750 user homes.
+    text = ""
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", SUBMIT_WRAPPER, "tail", user, logpath],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            text = r.stdout
+            # cap to last 200 lines for the UI
+            text = "\n".join(text.splitlines()[-200:])
+        else:
+            text = f"(tail wrapper failed: {(r.stderr or r.stdout).strip()})"
+    except subprocess.TimeoutExpired:
+        text = "(tail wrapper timed out)"
+
+    # Best-effort state from sacct
+    state = ""
+    try:
+        r = subprocess.run(
+            ["sacct", "-j", str(jobid), "-X", "--noheader", "--format=State", "-P"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            state = r.stdout.strip().splitlines()[0].split()[0]
+    except Exception:
+        pass
+
+    return jsonify(log=text, state=state, logpath=logpath)
+
+
+if __name__ == "__main__":
+    # Bound to localhost — Apache is the only legitimate caller. External
+    # access goes through Apache (which does auth) → reverse-proxy here.
+    app.run(host="127.0.0.1", port=PORT, debug=False)

@@ -22,3 +22,18 @@
   ansible.builtin.systemd:
     name: sacctweb
     state: restarted
+
+- name: restart submitweb
+  ansible.builtin.systemd:
+    name: submitweb
+    state: restarted
+
+- name: restart apache2
+  ansible.builtin.systemd:
+    name: apache2
+    state: restarted
+
+- name: reload apache2
+  ansible.builtin.systemd:
+    name: apache2
+    state: reloaded

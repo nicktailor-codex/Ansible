@@ -111,9 +111,9 @@ Each role is its own playbook. The role's *role tag* (same as the role name) run
 
 ---
 
-### `storage` — NFS mounts + `/scratch` baseline + NFSv4 ID mapping
+### `storage` — NFS mounts + `/scratch` baseline + `/software/*` perm posture + NFSv4 ID mapping
 
-**What it does:** Creates mount points for `/software` + `/mnt/{compchem,humgen,informatics}`, mounts the NetApp NFSv4 volumes (writes fstab and mounts in one shot), configures NFSv4 ID-mapping domain to match AD (`insmed.local`), and enforces `/scratch` parent perms at 0755 (`/home` model).
+**What it does:** Creates mount points for `/software` + `/mnt/{compchem,humgen,informatics}`, mounts the NetApp NFSv4 volumes (writes fstab and mounts in one shot), configures NFSv4 ID-mapping domain to match AD (`insmed.local`), enforces `/scratch` parent perms at 0755 (`/home` model), and asserts the `/software/*` shared-workspace perm posture (setgid + `domain users` group + group-write for new files).
 
 **Target hosts:** `all_cluster`
 **Dry-run:** `ansible-playbook playbooks/storage.yml --check --diff`
@@ -123,6 +123,7 @@ Each role is its own playbook. The role's *role tag* (same as the role name) run
 | `nfs` | NFS mount point dirs + `ansible.posix.mount` to mount NetApp volumes (writes/asserts fstab too). Used when remounting after a NetApp shrink/resize. |
 | `idmapd` | `/etc/idmapd.conf` Domain= line; clears the nfsidmap cache on change |
 | `scratch` | Sets `/scratch` parent to 0755 root:root (matches `/home`). Per-user subdirs handled by base role's `scratchdir` PAM hook + slurm prolog |
+| `software-perms` | Asserts the `/software/*` posture: workspaces (`cluster-build`, `containers`, `oligoai`) get `2775` (setgid) + group `domain users` + g+rw on files. Admin dirs (`spack`) get group `domain users` but mode stays 0775 (writes still need sudo). `/software/enroot-cache` is intentionally NOT in this list — `pyxis-enroot` role manages it with a stricter 3770. Configured via `storage_software_workspaces` + `storage_software_admin_dirs` in `defaults/main.yml` — adding a new workspace is one line. |
 
 Team-mount perm management is **not** in this role — it lives in `team-volumes`. The team-volume entries in `group_vars/all.yml` have `manage_perms: false` so this role doesn't fight team-volumes over chgrp.
 
@@ -163,14 +164,14 @@ Team-mount perm management is **not** in this role — it lives in `team-volumes
 
 ### `pyxis-enroot` — container runtime for Slurm
 
-**What it does:** Installs enroot 3.5.0 + pyxis v0.20.0 SPANK plugin (built against Slurm 23.11.4 headers), drops `enroot.conf` with the shared NetApp cache + per-job local scratch, registers pyxis in `/etc/slurm/plugstack.conf`.
+**What it does:** Installs enroot 3.5.0 + pyxis v0.20.0 SPANK plugin (built against Slurm 23.11.4 headers), drops `enroot.conf` with the shared NetApp cache + per-job local scratch, registers pyxis in `/etc/slurm/plugstack.conf`, and asserts the cache perm posture (3770 root:domain users with setgid).
 
 **Target hosts:** `all_cluster`
 **Dry-run:** `ansible-playbook playbooks/pyxis-enroot.yml --check --diff`
 
 | Tag | Scopes to |
 |---|---|
-| `config` | `enroot.conf` + plugstack registration |
+| `config` | `enroot.conf` + plugstack registration + `/software/enroot-cache` perm posture: mode `3770` (sticky + setgid + group rwx, no other access), group `domain users`, recursive chgrp on layer files, idempotent `find … ! -perm -040` chmod to keep layers group-readable. |
 | `validate` | Smoke test — pull a tiny container, extract, run `true` inside it |
 
 ---
@@ -206,9 +207,14 @@ Team-mount perm management is **not** in this role — it lives in `team-volumes
 
 ---
 
-### `slurm-ui` — Slurm web UIs (slurm-web v4 + sacctweb)
+### `slurm-ui` — Slurm web UIs (slurm-web v4 + sacctweb + submitweb)
 
-**What it does:** Codifies the two web UIs that sit in front of Slurm. **slurm-web v4** (rackslab apt repo, pinned to slurmweb-4 component) for the live queue/nodes/partitions view, plus the one-line `meta.Slurm` capitalisation patch needed for Slurm 23.11. **sacctweb** — the Flask job-history app we wrote because slurm-web v4 has no history view — deployed as `/usr/local/bin/sacctweb` + systemd unit running as the `slurm` user with `PrivateTmp` / `ProtectSystem` hardening. Plus rsyslog filters that drop the polling noise from both UIs.
+**What it does:** Codifies the three web UIs that sit in front of Slurm.
+- **slurm-web v4** (rackslab apt repo, pinned to `slurmweb-4`) — live queue/nodes/partitions view. UI at `:5011`, internal agent at `:5012`. Includes the `meta.Slurm` capitalisation patch needed for Slurm 23.11.
+- **sacctweb** — Flask job-history app at `:5013` (slurm-web v4 has no history view). Deployed as `/usr/local/bin/sacctweb` + systemd unit, runs as the `slurm` user with `PrivateTmp` / `ProtectSystem` hardening.
+- **submitweb** — Flask + Apache job-submission portal at `https://insiiukcpu01.insmed.local/submit/` (and the IP). AD basic-auth via `mod_authnz_pam` → SSSD, gates membership in `hpc_*` AD groups, submits as the actual AD user via the privilege-drop wrapper `submit-as-user`. TLS via self-signed cert (5-year, SANs for IP/hostname/FQDN) until IT issues an Insmed-CA cert. Live log tail via `scontrol`-discovered StdOut path.
+
+Plus rsyslog filters that drop the polling noise from slurm-web/sacctweb.
 
 > **Not** general monitoring (Prometheus, node_exporter, alerting, etc.). Just Slurm-facing web UIs. Renamed from `monitoring` on 2026-06-08 to make the boundary clear — `monitoring` is reserved for any future real-monitoring stack.
 
@@ -218,6 +224,7 @@ Team-mount perm management is **not** in this role — it lives in `team-volumes
 | Tag | Scopes to |
 |---|---|
 | `sacctweb` | Deploys `/usr/local/bin/sacctweb` + systemd unit + service enable/restart. URL: `http://10.174.16.55:5013/` |
+| `submitweb` | Installs Apache + `mod_authnz_pam` + `mod_ssl`; drops the Flask app, the `submit-as-user` wrapper (root-owned 0750), sudoers fragment (`/etc/sudoers.d/submitweb`), PAM service file, TLS cert (self-signed, 5-year), Apache vhost (HTTP→HTTPS 301 + HTTPS site with HSTS), enables the service. URL: `https://10.174.16.55/submit/`. Adds `www-data` to the `shadow` group so PAM can verify AD passwords via SSSD. |
 | `apt-hold` | Pins slurm-web to v4 (rackslab repo, `slurmweb-4` component, apt-mark hold + unattended-upgrades blacklist) |
 | `history` | Applies the slurm-web `jobs()` patch that merges 7-day sacct history into the live view (slurm-web v4 only shows live jobs natively) |
 
@@ -245,6 +252,18 @@ ansible-playbook playbooks/slurm.yml --tags config
 # Re-mount NFS shares without touching idmapd or /scratch
 ansible-playbook playbooks/storage.yml --tags nfs
 
+# Re-assert /software/* perm posture (workspaces + spack group)
+ansible-playbook playbooks/storage.yml --tags software-perms
+
+# Re-assert enroot cache perm posture
+ansible-playbook playbooks/pyxis-enroot.yml --tags config
+
+# Re-deploy + restart sacctweb (history UI)
+ansible-playbook playbooks/slurm-ui.yml --tags sacctweb
+
+# Redeploy / restart submitweb (Flask + Apache vhost + sudoers)
+ansible-playbook playbooks/slurm-ui.yml --tags submitweb
+
 # Apply just the /scratch baseline (parent perms)
 ansible-playbook playbooks/storage.yml --tags scratch
 
@@ -253,9 +272,6 @@ ansible-playbook playbooks/base.yml --tags scratchdir
 
 # Install the CUDA env declarations (does NOT spack install — see spack-lmod role README)
 ansible-playbook playbooks/spack-lmod.yml --tags cuda
-
-# Refresh sacctweb service only
-ansible-playbook playbooks/slurm-ui.yml --tags sacctweb
 
 # Re-validate Slurm health
 ansible-playbook playbooks/slurm.yml --tags validate

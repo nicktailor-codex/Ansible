@@ -1,0 +1,110 @@
+#!/bin/bash
+# submit-as-user — privilege-drop wrapper for submitweb. Two modes:
+#
+#   submit-as-user submit <user> <script_path>
+#     Read script body from stdin, write to <script_path>, chown to <user>,
+#     then sudo -u <user> sbatch <script_path>.
+#     <script_path> must be under /home/<user>/submitweb/.
+#
+#   submit-as-user tail <user> <log_path>
+#     Read last ~32KiB of <log_path> as <user> and print to stdout. Flask
+#     needs this because it runs as the slurm user and can't traverse
+#     into 0750 user homes.
+#     <log_path> must be under /home/<user>/ or /scratch/<user>/.
+#
+# Invoked by the Flask app via sudo (sudoers grants slurm NOPASSWD for
+# this exact path). Wrapper runs as root, validates input, then sudos to
+# the target user before any file IO.
+
+set -euo pipefail
+
+die()  { echo "ERROR: $*" >&2; exit 1; }
+
+[[ $# -ge 1 ]] || die "usage: submit-as-user submit|tail <user> <path>"
+
+MODE="$1"
+shift
+
+case "$MODE" in
+    submit|tail) ;;
+    *) die "unknown mode '$MODE' — expected submit|tail" ;;
+esac
+
+[[ $# -eq 2 ]] || die "usage: submit-as-user $MODE <user> <path> (got $#)"
+
+USER_ARG="$1"
+TARGET_PATH="$2"
+
+# 1. user must exist (NSS / SSSD)
+getent passwd "$USER_ARG" >/dev/null || die "unknown user: $USER_ARG"
+
+# 2. Common defensive checks: no path traversal
+case "$TARGET_PATH" in
+    *..*) die "path contains '..'" ;;
+esac
+
+if [[ "$MODE" == "submit" ]]; then
+    # ── submit mode ───────────────────────────────────────────────────
+    # Path must be /home/<user>/submitweb/*.sh
+    SCRIPT_PATH="$TARGET_PATH"
+    EXPECTED_PREFIX="/home/${USER_ARG}/submitweb/"
+    case "$SCRIPT_PATH" in
+        "$EXPECTED_PREFIX"*) ;;
+        *) die "script path $SCRIPT_PATH not under $EXPECTED_PREFIX" ;;
+    esac
+    case "$SCRIPT_PATH" in
+        *.sh) ;;
+        *) die "script path must end in .sh" ;;
+    esac
+
+    SUBMIT_DIR="$(dirname "$SCRIPT_PATH")"
+
+    # Create + chown the per-user dir
+    mkdir -p "$SUBMIT_DIR"
+    chown "$USER_ARG" "$SUBMIT_DIR"
+    chmod 0700 "$SUBMIT_DIR"
+
+    # Write script body (from stdin) to the target path, chown to user.
+    TMP_SCRIPT="$(mktemp -p "$SUBMIT_DIR" submitweb.XXXXXX)"
+    trap 'rm -f "$TMP_SCRIPT"' EXIT
+    cat > "$TMP_SCRIPT"
+    chown "$USER_ARG" "$TMP_SCRIPT"
+    chmod 0700 "$TMP_SCRIPT"
+    mv -f "$TMP_SCRIPT" "$SCRIPT_PATH"
+    trap - EXIT
+
+    [ -s "$SCRIPT_PATH" ] || die "script file empty after stdin read"
+
+    # Submit as user. cd into the user's submitweb dir first so relative
+    # paths in their #SBATCH directives (e.g. `-o myjob-%j.out`) resolve
+    # to /home/<user>/submitweb/myjob-... — not to '/' (the wrapper's
+    # default CWD), where the user has no write permission and the job
+    # would die immediately with an empty log.
+    cd "$SUBMIT_DIR"
+    exec sudo -u "$USER_ARG" -- /usr/bin/sbatch "$SCRIPT_PATH"
+fi
+
+if [[ "$MODE" == "tail" ]]; then
+    # ── tail mode ─────────────────────────────────────────────────────
+    # No path-prefix whitelist: the read is done via sudo -u <user>, so
+    # Unix permissions are the real gate. If the user can't read the
+    # file (it's owned by someone else, dir is 0700, etc.), tail just
+    # fails and we print nothing.
+    #
+    # Path must be absolute and not contain '..' (the latter checked
+    # above for both modes).
+    LOG_PATH="$TARGET_PATH"
+    case "$LOG_PATH" in
+        /*) ;;
+        *) die "log path must be absolute, got $LOG_PATH" ;;
+    esac
+
+    # Invoke tail directly with the path as an argv element — no shell,
+    # no quoting hazard if the path contains special chars. tail returns
+    # non-zero if the file doesn't exist or isn't readable; we swallow
+    # that so Flask sees "(no log)" rather than an error.
+    sudo -u "$USER_ARG" -- /usr/bin/tail -c 32768 -- "$LOG_PATH" 2>/dev/null || true
+    exit 0
+fi
+
+die "fell through mode dispatch — should be unreachable"

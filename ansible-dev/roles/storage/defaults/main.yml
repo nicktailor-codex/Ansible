@@ -37,3 +37,19 @@ storage_idmapd_domain: "{{ ad_domain }}"
 # Local scratch shared-software bootstrap area (pre-NetApp, kept for legacy
 # fallback paths). Sticky world-writable like /tmp.
 storage_cluster_software_dir: /scratch/cluster-software
+
+# /software/* shared workspaces — group=domain users, setgid (so new files
+# inherit the group), group write so any AD user can drop their own work.
+# Each entry is asserted recursively (dirs → setgid 2775; files → group rw).
+# The enroot-cache dir is intentionally NOT in this list — pyxis-enroot
+# role manages it with a stricter 3770 (no other access).
+storage_software_workspaces:
+  - /software/cluster-build
+  - /software/containers
+  - /software/oligoai
+
+# /software/spack — admin-managed (writes via sudo only — see project memory
+# on the prefix_lock root:root). Group is set to 'domain users' so AD users
+# can read+execute (module load); mode stays 0775 so they cannot write.
+storage_software_admin_dirs:
+  - /software/spack

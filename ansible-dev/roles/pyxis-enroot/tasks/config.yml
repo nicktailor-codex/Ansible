@@ -5,16 +5,41 @@
 # live on local /scratch for speed. All nodes carry the same enroot.conf.
 
 # The cache dir is on NetApp so the dir-ensure task runs idempotently
-# from every node — first one creates, others see it. Sticky perms
-# (1777) so any user can `enroot import`; sticky bit prevents users
-# from deleting each other's cached images.
+# from every node — first one creates, others see it.
+#
+# Mode 3770 root:'domain users' with setgid → AD users in 'domain users'
+# can import/read; non-AD service accounts (ntailor local, slurm, etc.)
+# need sudo. The setgid bit ensures new files written into the cache
+# inherit the 'domain users' group regardless of the importer's primary
+# group, so layer files are always readable by every AD user. See
+# defaults/main.yml for the why-not-1777 background.
 - name: Shared enroot cache directory exists on NetApp
   ansible.builtin.file:
     path: "{{ pyxis_enroot_cache_dir }}"
     state: directory
     owner: root
-    group: root
+    group: "{{ pyxis_enroot_cache_group }}"
     mode: "{{ pyxis_enroot_cache_mode }}"
+
+# Re-assert group ownership recursively — fixes drift from older imports
+# (ntailor:ntailor 0640 files etc.) and from any future imports that
+# somehow land with a stale group despite the setgid bit on the dir.
+# Cheap on a small cache (~80 layer files today).
+- name: enroot cache layer files — group 'domain users' (recursive)
+  ansible.builtin.file:
+    path: "{{ pyxis_enroot_cache_dir }}"
+    group: "{{ pyxis_enroot_cache_group }}"
+    recurse: yes
+
+# Ensure layer files are at least group-readable. Some imports land with
+# umask 077 → 0600, locking out other domain-users members. Make them
+# at least 0640 (owner-rw, group-r, no other) so the cache actually works.
+# Idempotent: find skips files that already satisfy the perm test.
+- name: enroot cache layer files — group readable (g+r)
+  ansible.builtin.command:
+    cmd: "find {{ pyxis_enroot_cache_dir }} -type f ! -perm -040 -print -exec chmod g+r {} +"
+  register: _enroot_cache_chmod
+  changed_when: _enroot_cache_chmod.stdout != ""
 
 - name: enroot.conf canonical
   ansible.builtin.copy:

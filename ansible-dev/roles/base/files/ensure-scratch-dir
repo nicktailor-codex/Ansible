@@ -1,18 +1,25 @@
 #!/bin/sh
-# ensure-scratch-dir — create /scratch/$PAM_USER on login.
+# ensure-scratch-dir — best-effort per-user /scratch/<user> creation.
 #
-# Mirrors what pam_mkhomedir does for /home, but for the local NVMe
-# scratch space. Called via pam_exec from /etc/pam.d/common-session
-# (see /usr/share/pam-configs/scratchdir). Slurm jobs get this via
-# the prolog (20-enroot-scratch.sh); this script covers interactive
-# (ssh / shell) login sessions.
+# Called via pam_exec (without seteuid → runs as root) from common-session.
+# Mirrors what pam_mkhomedir does for /home, but for the local NVMe scratch
+# space. Slurm jobs get this via the prolog (20-enroot-scratch.sh); this
+# script covers interactive (ssh / sudo / shell) login sessions.
 #
-# PAM_USER is set by libpam — bail safely if unset.
-set -eu
-: "${PAM_USER:?PAM_USER not set}"
+# Hard rule: this script MUST NEVER fail in a way that blocks PAM. The
+# pam_exec entry is `optional`, but we still exit 0 from every path so
+# even spurious failures stay invisible. Worst-case (dir not creatable),
+# the user just doesn't get an auto-provisioned /scratch dir — they can
+# mkdir it via sbatch prolog or sudo if needed.
+
+PAM_USER="${PAM_USER:-}"
+[ -n "$PAM_USER" ] || exit 0
 
 SCRATCH="/scratch/${PAM_USER}"
-if [ ! -d "$SCRATCH" ]; then
-    install -d -m 0700 -o "$PAM_USER" "$SCRATCH"
-fi
+[ -d "$SCRATCH" ] && exit 0
+
+# Create as root; chown to user; lock down. install -d w/ -o handles the
+# chown atomically. Tolerate failure (e.g. weird usernames, lookup
+# misses) without breaking PAM session opening.
+install -d -m 0700 -o "$PAM_USER" "$SCRATCH" 2>/dev/null || true
 exit 0

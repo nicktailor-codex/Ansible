@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# slurm-allow — manage a Slurm partition's AllowAccounts at runtime.
+# slurm-allow — manage a Slurm partition's AllowAccounts.
 #
 # Subcommands:
 #   slurm-allow show <partition>
@@ -9,15 +9,33 @@
 #   slurm-allow open <partition>                    # back to AllowAccounts=ALL
 #
 # Each subcommand validates accounts via `sacctmgr show account` before
-# applying. Changes are RUNTIME-ONLY (scontrol update) — they revert if
-# slurmctld restarts or `ansible-playbook playbooks/slurm.yml` re-templates
-# slurm.conf. To persist, also update AllowAccounts in:
-#   ~/ansible-dev/roles/slurm/files/slurm.conf
+# applying. By default, EVERY successful change is persisted in TWO places:
+#   1. RUNTIME: `scontrol update PartitionName=... AllowAccounts=...`
+#      → live in slurmctld immediately
+#   2. ROLE FILE: edits AllowAccounts= line in
+#      $SLURM_ALLOW_ROLE_CONF   (default: /home/ntailor/ansible-dev/roles/slurm/files/slurm.conf)
+#      → next `ansible-playbook playbooks/slurm.yml --tags config` push will
+#        be CORRECT (no surprise rollback on the next run)
+#      → if slurmctld restarts (e.g. assoc_mgr deadlock + auto-restart), the
+#        change still needs the ansible run to land in /etc/slurm/slurm.conf
+#
+# Opt out of role-file persistence with:
+#   SLURM_ALLOW_NO_PERSIST=1 slurm-allow add gpu02 informatics
+#
+# Override the role-file path (e.g. a different admin's checkout) with:
+#   SLURM_ALLOW_ROLE_CONF=/path/to/slurm.conf slurm-allow ...
+#
+# If the role file is missing or doesn't have an AllowAccounts line for
+# the target partition, slurm-allow warns but doesn't fail — the runtime
+# change is still applied.
 
 set -euo pipefail
 
+ROLE_CONF="${SLURM_ALLOW_ROLE_CONF:-/home/ntailor/ansible-dev/roles/slurm/files/slurm.conf}"
+
 die()  { echo "ERROR: $*" >&2; exit 1; }
 note() { echo "NOTE:  $*" >&2; }
+warn() { echo "WARN:  $*" >&2; }
 
 usage() {
     sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
@@ -41,10 +59,57 @@ apply_accounts() {
     local new="$1"
     sudo scontrol update PartitionName="$PART" AllowAccounts="$new" \
         || die "scontrol update failed"
-    echo "Updated $PART AllowAccounts → $new"
-    note "this is runtime-only. To persist across slurmctld restarts and"
-    note "ansible reapplies, also update AllowAccounts in slurm.conf via the role:"
-    note "  ~/ansible-dev/roles/slurm/files/slurm.conf"
+    echo "Updated $PART AllowAccounts → $new (runtime)"
+
+    if [[ "${SLURM_ALLOW_NO_PERSIST:-0}" == "1" ]]; then
+        note "SLURM_ALLOW_NO_PERSIST=1 — runtime change only; role file NOT updated"
+        return 0
+    fi
+    persist_role_conf "$new"
+}
+
+# Edit AllowAccounts= line for $PART in $ROLE_CONF. Atomic (tmp+mv) and
+# preserves the file's original ownership. Walks the partition block by
+# anchoring on "^PartitionName=$PART[whitespace]" and updating the first
+# "^  AllowAccounts=" line in that block.
+persist_role_conf() {
+    local new="$1"
+    if [[ ! -f "$ROLE_CONF" ]]; then
+        warn "role file $ROLE_CONF not found — runtime change applied, NOT persisted"
+        warn "set SLURM_ALLOW_ROLE_CONF=<path> or symlink your role's slurm.conf there"
+        return 0
+    fi
+
+    local tmp owner
+    tmp=$(sudo mktemp "${ROLE_CONF}.XXXXXX")
+    owner=$(stat -c '%u:%g' "$ROLE_CONF")
+
+    sudo awk -v part="$PART" -v new="$new" '
+        BEGIN { in_block = 0; changed = 0 }
+        /^PartitionName=/ {
+            in_block = ($0 ~ "^PartitionName=" part "[[:space:]]")
+        }
+        in_block && /^  AllowAccounts=/ && !changed {
+            sub(/AllowAccounts=[^ ]+/, "AllowAccounts=" new)
+            changed = 1
+        }
+        { print }
+        END { exit !changed }
+    ' "$ROLE_CONF" | sudo tee "$tmp" >/dev/null
+    local rc=${PIPESTATUS[0]}
+
+    if [[ $rc -ne 0 ]]; then
+        sudo rm -f "$tmp"
+        warn "no '  AllowAccounts=' line in role file's $PART block — runtime change applied, NOT persisted"
+        warn "edit $ROLE_CONF by hand to add it, or this change is lost on the next ansible run"
+        return 0
+    fi
+
+    sudo install -m "$(stat -c '%a' "$ROLE_CONF")" -o "${owner%%:*}" -g "${owner##*:}" "$tmp" "$ROLE_CONF"
+    sudo rm -f "$tmp"
+    echo "Persisted to $ROLE_CONF"
+    note "to push to /etc/slurm on every node, run:"
+    note "  ansible-playbook -i ~/ansible-dev/inventory/hosts.ini ~/ansible-dev/playbooks/slurm.yml --tags config"
 }
 
 validate_account() {

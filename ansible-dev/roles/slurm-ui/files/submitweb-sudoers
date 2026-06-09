@@ -1,0 +1,12 @@
+# submitweb-sudoers — drop into /etc/sudoers.d/submitweb (mode 0440).
+#
+# The Flask app runs as the slurm user (so it can call sacct without
+# auth gymnastics). To submit as the authenticated AD user it shells out
+# to /usr/local/sbin/submit-as-user (root-owned, 0750), which validates
+# input then sudo-drops to the target user.
+#
+# Only one rule needed: slurm can run the wrapper as root, no password.
+# The wrapper itself runs as root and can sudo -u to any user without
+# additional sudoers entries (root → any user is always allowed).
+
+slurm   ALL=(root) NOPASSWD: /usr/local/sbin/submit-as-user

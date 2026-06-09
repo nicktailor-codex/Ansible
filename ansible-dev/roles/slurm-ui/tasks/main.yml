@@ -304,3 +304,178 @@
     state: absent
   when: inventory_hostname == slurm_controller
   tags: [slurm-ui, sacctweb]
+
+# ── submitweb ──────────────────────────────────────────────────────────
+# Flask app at port 5014 that lets AD-authenticated users in hpc_<team>
+# groups paste an sbatch script and submit it AS THEMSELVES (via a
+# sudo-gated privilege-drop wrapper). Apache fronts on :80 /submit/ with
+# mod_authnz_pam → SSSD → AD. cpu01-only.
+
+- name: Apache + auth modules (apt)
+  ansible.builtin.apt:
+    name:
+      - apache2
+      - libapache2-mod-authnz-pam
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+  when: inventory_hostname == slurm_controller
+  tags: [slurm-ui, submitweb]
+
+- name: Apache modules enabled (idempotent via a2enmod + creates marker)
+  ansible.builtin.command:
+    cmd: a2enmod {{ item }}
+    creates: /etc/apache2/mods-enabled/{{ item }}.load
+  loop:
+    - authnz_pam
+    - proxy
+    - proxy_http
+    - headers
+    - ssl
+    - rewrite
+  when: inventory_hostname == slurm_controller
+  notify: restart apache2
+  tags: [slurm-ui, submitweb]
+
+# ── TLS cert (self-signed) ────────────────────────────────────────────
+# 5-year RSA-4096 with SANs for IP, short hostname, FQDN. `creates:` makes
+# both tasks idempotent — we never regenerate on a re-run. To rotate (or
+# replace with an Insmed-issued cert): delete /etc/ssl/private/submitweb.key
+# + /etc/ssl/certs/submitweb.crt, re-apply the role; OR drop the new pair
+# in place and `systemctl reload apache2`.
+- name: TLS private key for submitweb (RSA 4096, mode 0600 via umask)
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      umask 0077
+      openssl genrsa -out /etc/ssl/private/submitweb.key 4096
+      chown root:root /etc/ssl/private/submitweb.key
+    creates: /etc/ssl/private/submitweb.key
+  when: inventory_hostname == slurm_controller
+  tags: [slurm-ui, submitweb, tls]
+
+- name: TLS cert for submitweb (5-year self-signed with SANs)
+  ansible.builtin.shell:
+    cmd: |
+      set -eu
+      openssl req -x509 -new -nodes \
+        -key /etc/ssl/private/submitweb.key \
+        -sha256 -days 1825 \
+        -out /etc/ssl/certs/submitweb.crt \
+        -subj "/CN=10.174.16.55" \
+        -addext "subjectAltName=IP:10.174.16.55,DNS:insiiukcpu01,DNS:insiiukcpu01.insmed.local,DNS:submit.cluster.local" \
+        -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+        -addext "extendedKeyUsage=serverAuth"
+      chmod 0644 /etc/ssl/certs/submitweb.crt
+      chown root:root /etc/ssl/certs/submitweb.crt
+    creates: /etc/ssl/certs/submitweb.crt
+  when: inventory_hostname == slurm_controller
+  notify: reload apache2
+  tags: [slurm-ui, submitweb, tls]
+
+- name: Add www-data to shadow group (so mod_authnz_pam can read AD creds via PAM/SSSD)
+  ansible.builtin.user:
+    name: www-data
+    groups: shadow
+    append: yes
+  when: inventory_hostname == slurm_controller
+  notify: restart apache2
+  tags: [slurm-ui, submitweb]
+
+- name: PAM service for submitweb auth (delegates to SSSD)
+  ansible.builtin.copy:
+    src: submitweb-pam
+    dest: /etc/pam.d/submitweb
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == slurm_controller
+  tags: [slurm-ui, submitweb]
+
+- name: submit-as-user privilege-drop wrapper (root, 0750)
+  ansible.builtin.copy:
+    src: submit-as-user
+    dest: /usr/local/sbin/submit-as-user
+    owner: root
+    group: root
+    mode: "0750"
+  when: inventory_hostname == slurm_controller
+  tags: [slurm-ui, submitweb]
+
+- name: sudoers — slurm can invoke submit-as-user as root
+  ansible.builtin.copy:
+    src: submitweb-sudoers
+    dest: /etc/sudoers.d/submitweb
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+  when: inventory_hostname == slurm_controller
+  tags: [slurm-ui, submitweb]
+
+- name: submitweb deploy (Flask app)
+  ansible.builtin.copy:
+    src: submitweb
+    dest: /usr/local/bin/submitweb
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname == slurm_controller
+  notify: restart submitweb
+  tags: [slurm-ui, submitweb]
+
+- name: submitweb systemd unit
+  ansible.builtin.copy:
+    src: submitweb.service
+    dest: /etc/systemd/system/submitweb.service
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == slurm_controller
+  register: submitweb_unit
+  notify: restart submitweb
+  tags: [slurm-ui, submitweb]
+
+- name: submitweb service active + enabled
+  ansible.builtin.systemd:
+    name: submitweb
+    state: started
+    enabled: yes
+    daemon_reload: "{{ submitweb_unit.changed | default(false) }}"
+  when: inventory_hostname == slurm_controller
+  tags: [slurm-ui, submitweb]
+
+- name: Apache vhost for /submit/
+  ansible.builtin.copy:
+    src: submitweb-apache.conf
+    dest: /etc/apache2/sites-available/submitweb.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: inventory_hostname == slurm_controller
+  notify: reload apache2
+  tags: [slurm-ui, submitweb]
+
+- name: Apache vhost enabled
+  ansible.builtin.command:
+    cmd: a2ensite submitweb
+    creates: /etc/apache2/sites-enabled/submitweb.conf
+  when: inventory_hostname == slurm_controller
+  notify: reload apache2
+  tags: [slurm-ui, submitweb]
+
+- name: Apache default site disabled (avoid 000-default catching the URL)
+  ansible.builtin.command:
+    cmd: a2dissite 000-default
+    removes: /etc/apache2/sites-enabled/000-default.conf
+  when: inventory_hostname == slurm_controller
+  notify: reload apache2
+  tags: [slurm-ui, submitweb]
+
+- name: Apache active + enabled
+  ansible.builtin.systemd:
+    name: apache2
+    state: started
+    enabled: yes
+  when: inventory_hostname == slurm_controller
+  tags: [slurm-ui, submitweb]

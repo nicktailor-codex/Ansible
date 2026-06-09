@@ -1,0 +1,27 @@
+[Unit]
+Description=submitweb — Slurm job submission web UI
+Documentation=file:///home/ntailor/ansible-dev/roles/slurm-ui/files/submitweb
+After=network.target slurmctld.service
+Wants=slurmctld.service
+
+[Service]
+Type=simple
+# Same trust model as sacctweb: runs as slurm. The privilege-drop boundary
+# is /usr/local/sbin/submit-as-user (root, called via sudo).
+User=slurm
+Group=slurm
+ExecStart=/usr/bin/python3 /usr/local/bin/submitweb
+Restart=on-failure
+RestartSec=10
+# Hardening
+ProtectSystem=strict
+# ProtectHome NOT set — Flask sudos to a wrapper that needs to mkdir/write
+# under /home/<user>/submitweb. ProtectHome=read-only would EROFS those
+# writes even from sudo'd children (mount namespace propagates).
+PrivateTmp=yes
+NoNewPrivileges=no   # needs to be no so the sudo→wrapper privilege drop works
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
